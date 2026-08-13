@@ -1,1 +1,58 @@
-[]
+[
+  {
+    "id": "uniqlo-sale-women",
+    "brand": "uniqlo",
+    "label": "UNIQLO 値下げ商品(レディース)",
+    "urls": ["https://www.uniqlo.com/jp/ja/feature/sale/women"],
+    "maxProducts": 200
+  },
+  {
+    "id": "uniqlo-sale-men",
+    "brand": "uniqlo",
+    "label": "UNIQLO 値下げ商品(メンズ)",
+    "urls": ["https://www.uniqlo.com/jp/ja/feature/sale/men"],
+    "maxProducts": 200
+  },
+  {
+    "id": "uniqlo-limited-women",
+    "brand": "uniqlo",
+    "label": "UNIQLO 期間限定価格(レディース)",
+    "urls": ["https://www.uniqlo.com/jp/ja/feature/limited-offers/women"],
+    "maxProducts": 200
+  },
+  {
+    "id": "uniqlo-limited-men",
+    "brand": "uniqlo",
+    "label": "UNIQLO 期間限定価格(メンズ)",
+    "urls": ["https://www.uniqlo.com/jp/ja/feature/limited-offers/men"],
+    "maxProducts": 200
+  },
+  {
+    "id": "gu-sale-women",
+    "brand": "gu",
+    "label": "GU 値下げ商品(レディース)",
+    "urls": ["https://www.gu-global.com/jp/ja/feature/sale/women"],
+    "maxProducts": 200
+  },
+  {
+    "id": "gu-sale-men",
+    "brand": "gu",
+    "label": "GU 値下げ商品(メンズ)",
+    "urls": ["https://www.gu-global.com/jp/ja/feature/sale/men"],
+    "maxProducts": 200
+  },
+  {
+    "id": "gu-limited-women",
+    "brand": "gu",
+    "label": "GU 期間限定価格(レディース)",
+    "urls": ["https://www.gu-global.com/jp/ja/feature/limited-offers/women"],
+    "maxProducts": 200
+  },
+  {
+    "id": "gu-limited-men",
+    "brand": "gu",
+    "label": "GU 期間限定価格(メンズ)",
+    "urls": ["https://www.gu-global.com/jp/ja/feature/limited-offers/men"],
+    "maxProducts": 200
+  }
+]
