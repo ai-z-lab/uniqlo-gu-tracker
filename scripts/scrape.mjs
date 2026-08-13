@@ -1,8 +1,10 @@
-// Fetches each tracked product page (config/products.json), extracts the current
-// price, and inserts a new row into price_events only when the price differs
-// from the most recently recorded one for that product. Run by
-// .github/workflows/scrape.yml on a schedule (needs full internet access,
-// so it must run in GitHub Actions rather than locally in a sandboxed shell).
+// Crawls each configured listing/category page (config/sources.json — e.g. a
+// "sale" or "limited-time price" page), discovers every product linked from
+// it, fetches each product's page, and inserts a new price_events row only
+// when the price differs from the most recently recorded one for that
+// product. Run by .github/workflows/scrape.yml on a schedule (needs full
+// internet access, so it must run in GitHub Actions rather than locally in a
+// sandboxed shell).
 
 import { createClient } from '@supabase/supabase-js';
 import { readFile } from 'node:fs/promises';
@@ -20,6 +22,57 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
+const DEFAULT_MAX_PRODUCTS_PER_SOURCE = 200;
+const REQUEST_DELAY_MS = 250;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchHtml(url) {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9' },
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} fetching ${url}`);
+  }
+  return res.text();
+}
+
+// --- Discovery: find product page links on a listing/category page ---
+
+function extractProductLinks(html, baseUrl) {
+  const links = new Set();
+  const hrefRegex = /href=["']([^"']*\/products\/[^"']*)["']/gi;
+  let match;
+  while ((match = hrefRegex.exec(html))) {
+    try {
+      const absolute = new URL(match[1], baseUrl).toString().split('#')[0];
+      links.add(absolute);
+    } catch {
+      // ignore malformed hrefs
+    }
+  }
+  return [...links];
+}
+
+async function discoverProductUrls(source) {
+  const listingUrls = source.urls ?? (source.url ? [source.url] : []);
+  const discovered = new Set();
+
+  for (const listingUrl of listingUrls) {
+    try {
+      const html = await fetchHtml(listingUrl);
+      for (const link of extractProductLinks(html, listingUrl)) discovered.add(link);
+    } catch (err) {
+      console.error(`[${source.id}] failed to load listing page ${listingUrl}: ${err.message}`);
+    }
+    await sleep(REQUEST_DELAY_MS);
+  }
+
+  return [...discovered];
+}
+
+// --- Extraction: price and product name from a product page ---
+
 function findPriceInObject(obj, depth = 0) {
   if (depth > 8 || obj == null || typeof obj !== 'object') return null;
   for (const key of Object.keys(obj)) {
@@ -35,8 +88,8 @@ function findPriceInObject(obj, depth = 0) {
   return null;
 }
 
-function extractPriceFromHtml(html) {
-  // Strategy 1: schema.org JSON-LD (Product/Offers) — the most standardized signal.
+function parseJsonLdProducts(html) {
+  const products = [];
   const ldMatches = html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
   for (const match of ldMatches) {
     try {
@@ -45,22 +98,28 @@ function extractPriceFromHtml(html) {
       for (const root of roots) {
         const candidates = root['@graph'] ? root['@graph'] : [root];
         for (const item of candidates) {
-          if (item['@type'] !== 'Product' || !item.offers) continue;
-          const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
-          for (const offer of offers) {
-            const price = offer.price ?? offer.lowPrice;
-            if (price != null) {
-              return { price: Number(price), currency: offer.priceCurrency || 'JPY' };
-            }
-          }
+          if (item['@type'] === 'Product') products.push(item);
         }
       }
     } catch {
       // malformed JSON-LD block, try the next one
     }
   }
+  return products;
+}
 
-  // Strategy 2: Open Graph price meta tags.
+function extractPriceFromHtml(html) {
+  for (const product of parseJsonLdProducts(html)) {
+    if (!product.offers) continue;
+    const offers = Array.isArray(product.offers) ? product.offers : [product.offers];
+    for (const offer of offers) {
+      const price = offer.price ?? offer.lowPrice;
+      if (price != null) {
+        return { price: Number(price), currency: offer.priceCurrency || 'JPY' };
+      }
+    }
+  }
+
   const metaPrice =
     html.match(/<meta[^>]+property=["']product:price:amount["'][^>]+content=["']([\d.]+)["']/i) ||
     html.match(/<meta[^>]+content=["']([\d.]+)["'][^>]+property=["']product:price:amount["']/i);
@@ -69,7 +128,6 @@ function extractPriceFromHtml(html) {
     return { price: Number(metaPrice[1]), currency: currencyMatch ? currencyMatch[1] : 'JPY' };
   }
 
-  // Strategy 3: Next.js __NEXT_DATA__ payload — search for a plausible price field.
   const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
   if (nextDataMatch) {
     try {
@@ -84,6 +142,25 @@ function extractPriceFromHtml(html) {
   return null;
 }
 
+function extractNameFromHtml(html) {
+  for (const product of parseJsonLdProducts(html)) {
+    if (product.name) return product.name;
+  }
+  const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
+  if (ogTitle) return ogTitle[1];
+  const titleTag = html.match(/<title>([^<]+)<\/title>/i);
+  if (titleTag) return titleTag[1].trim();
+  return null;
+}
+
+function productIdFromUrl(url, brand) {
+  const match = url.match(/\/products\/([A-Za-z0-9-]+)/);
+  const code = match ? match[1] : Buffer.from(url).toString('base64url').slice(0, 24);
+  return `${brand}-${code}`;
+}
+
+// --- Recording price events ---
+
 async function fetchLatestRecordedPrice(productId) {
   const { data, error } = await supabase
     .from('price_events')
@@ -95,66 +172,89 @@ async function fetchLatestRecordedPrice(productId) {
   return data?.[0] ?? null;
 }
 
-async function processProduct(product) {
-  const res = await fetch(product.url, {
-    headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9' },
-  });
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} fetching ${product.url}`);
-  }
-
-  const html = await res.text();
-  const result = extractPriceFromHtml(html);
-  if (!result) {
+async function processProductUrl(url, brand) {
+  const html = await fetchHtml(url);
+  const priceResult = extractPriceFromHtml(html);
+  if (!priceResult) {
     throw new Error('could not extract a price from the page');
   }
+  const name = extractNameFromHtml(html);
+  const productId = productIdFromUrl(url, brand);
 
-  const latest = await fetchLatestRecordedPrice(product.id);
-  if (latest && latest.price === result.price && latest.currency === result.currency) {
-    console.log(`[${product.id}] unchanged (${result.price} ${result.currency})`);
-    return 'unchanged';
+  const latest = await fetchLatestRecordedPrice(productId);
+  if (latest && latest.price === priceResult.price && latest.currency === priceResult.currency) {
+    return { productId, outcome: 'unchanged' };
   }
 
   const { error: insertError } = await supabase.from('price_events').insert({
-    product_id: product.id,
-    product_name: product.name ?? null,
-    brand: product.brand,
-    url: product.url,
-    price: result.price,
-    currency: result.currency,
+    product_id: productId,
+    product_name: name,
+    brand,
+    url,
+    price: priceResult.price,
+    currency: priceResult.currency,
   });
   if (insertError) throw insertError;
 
-  console.log(`[${product.id}] recorded new price event: ${result.price} ${result.currency}`);
-  return 'changed';
+  return { productId, outcome: 'changed', price: priceResult.price, currency: priceResult.currency };
 }
 
-async function main() {
-  const raw = await readFile(new URL('../config/products.json', import.meta.url), 'utf-8');
-  const products = JSON.parse(raw);
+async function processSource(source) {
+  const productUrls = await discoverProductUrls(source);
+  console.log(`[${source.id}] discovered ${productUrls.length} product page(s)`);
 
-  if (products.length === 0) {
-    console.log('No products configured in config/products.json — nothing to scrape.');
-    return;
+  const cap = source.maxProducts ?? DEFAULT_MAX_PRODUCTS_PER_SOURCE;
+  const targets = productUrls.slice(0, cap);
+  if (productUrls.length > cap) {
+    console.log(`[${source.id}] capping to first ${cap} product(s) (maxProducts)`);
   }
 
   let changed = 0;
   let unchanged = 0;
   let failed = 0;
 
-  for (const product of products) {
+  for (const url of targets) {
     try {
-      const outcome = await processProduct(product);
-      if (outcome === 'changed') changed++;
-      else unchanged++;
+      const result = await processProductUrl(url, source.brand);
+      if (result.outcome === 'changed') {
+        changed++;
+        console.log(`[${source.id}] [${result.productId}] recorded new price event: ${result.price} ${result.currency}`);
+      } else {
+        unchanged++;
+      }
     } catch (err) {
       failed++;
-      console.error(`[${product.id ?? product.url}] failed: ${err.message}`);
+      console.error(`[${source.id}] failed for ${url}: ${err.message}`);
     }
+    await sleep(REQUEST_DELAY_MS);
   }
 
-  console.log(`Done. ${changed} changed, ${unchanged} unchanged, ${failed} failed (of ${products.length}).`);
-  if (failed > 0 && failed === products.length) {
+  return { discovered: productUrls.length, changed, unchanged, failed };
+}
+
+async function main() {
+  const raw = await readFile(new URL('../config/sources.json', import.meta.url), 'utf-8');
+  const sources = JSON.parse(raw);
+
+  if (sources.length === 0) {
+    console.log('No sources configured in config/sources.json — nothing to scrape.');
+    return;
+  }
+
+  const totals = { discovered: 0, changed: 0, unchanged: 0, failed: 0 };
+
+  for (const source of sources) {
+    const result = await processSource(source);
+    totals.discovered += result.discovered;
+    totals.changed += result.changed;
+    totals.unchanged += result.unchanged;
+    totals.failed += result.failed;
+  }
+
+  console.log(
+    `Done. ${totals.discovered} discovered, ${totals.changed} changed, ${totals.unchanged} unchanged, ${totals.failed} failed.`
+  );
+  if (totals.discovered > 0 && totals.failed === totals.discovered) {
     process.exitCode = 1;
   }
 }

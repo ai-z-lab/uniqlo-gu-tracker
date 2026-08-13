@@ -1,0 +1,16 @@
+[
+  {
+    "id": "uniqlo-sale",
+    "brand": "uniqlo",
+    "label": "UNIQLO セール一覧(例・要確認)",
+    "urls": ["https://www.uniqlo.com/jp/ja/feature/sale"],
+    "maxProducts": 200
+  },
+  {
+    "id": "gu-sale",
+    "brand": "gu",
+    "label": "GU セール一覧(例・要確認)",
+    "urls": ["https://www.gu-global.com/jp/ja/feature/sale"],
+    "maxProducts": 200
+  }
+]
