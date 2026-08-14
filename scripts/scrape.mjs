@@ -40,25 +40,39 @@ const USER_AGENT =
 const DEFAULT_MAX_PRODUCTS_PER_SOURCE = 200;
 const REQUEST_DELAY_MS = 150;
 
-// Hard time budget for rendering + extracting a single product page. Kept
-// short and enforced with a real timeout (not just Playwright's per-call
-// timeouts) because a page that never reaches "networkidle" — common with
-// sites that keep analytics/polling connections open — must not be allowed
-// to stall the whole run.
+// Hard time budgets. Every single Playwright call that touches the network
+// or the browser process (goto, content, screenshot, context.close, even
+// browser.launch) is wrapped in withTimeout below — not just goto — because
+// any of them can hang indefinitely if the browser process or a page
+// becomes unresponsive, and a page that never reaches "networkidle" (common
+// with sites that keep analytics/polling connections open) must not be
+// allowed to stall the whole run.
 const PRODUCT_TIMEOUT_MS = 10_000;
 const NAV_TIMEOUT_MS = 7_000;
 const RENDER_SETTLE_MS = 1_000;
+const CONTENT_TIMEOUT_MS = 5_000;
+const SCREENSHOT_TIMEOUT_MS = 8_000;
+const CONTEXT_CLOSE_TIMEOUT_MS = 5_000;
+const BROWSER_LAUNCH_TIMEOUT_MS = 30_000;
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Races `promise` against a timer. Crucially, if `promise` loses the race
+// and only rejects *later* (e.g. Playwright's own timeout fires after ours
+// already did), that late rejection is swallowed here instead of becoming
+// an unhandled promise rejection — which in Node can crash or wedge the
+// process, and looks exactly like a silent hang in CI logs.
 function withTimeout(promise, ms, label) {
   let timer;
-  const timeout = new Promise((_, reject) => {
+  const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms (${label})`)), ms);
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+    promise.catch(() => {});
+  });
 }
 
 // --- Discovery: find product page links on a listing/category page ---
@@ -203,7 +217,13 @@ function productIdFromUrl(url, brand) {
 
 // --- Rendering a product page and extracting price/name from it ---
 
-async function collectRenderedPage(page, url, productCode, candidateJsonResponses, { navTimeoutMs = NAV_TIMEOUT_MS, settleMs = RENDER_SETTLE_MS, onlyMatchingProductCode = true } = {}) {
+async function collectRenderedPage(
+  page,
+  url,
+  productCode,
+  candidateJsonResponses,
+  { navTimeoutMs = NAV_TIMEOUT_MS, settleMs = RENDER_SETTLE_MS, onlyMatchingProductCode = true, log = () => {} } = {}
+) {
   page.on('response', async (response) => {
     try {
       const contentType = response.headers()['content-type'] || '';
@@ -216,9 +236,22 @@ async function collectRenderedPage(page, url, productCode, candidateJsonResponse
     }
   });
 
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
+  log(`goto start (timeout ${navTimeoutMs}ms)`);
+  await withTimeout(page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs }), navTimeoutMs + 2_000, 'goto');
+  log('goto done, settling');
   await page.waitForTimeout(settleMs);
-  return page.content();
+  log('reading rendered content');
+  const html = await withTimeout(page.content(), CONTENT_TIMEOUT_MS, 'page.content');
+  log('content read');
+  return html;
+}
+
+async function closeContextSafely(context, log = () => {}) {
+  try {
+    await withTimeout(context.close(), CONTEXT_CLOSE_TIMEOUT_MS, 'context.close');
+  } catch (err) {
+    log(`context.close did not finish cleanly: ${err.message}`);
+  }
 }
 
 async function renderAndExtract(browser, url) {
@@ -255,7 +288,7 @@ async function renderAndExtract(browser, url) {
     const name = extractNameFromRenderedHtml(renderedHtml);
     return { price: result.price, currency: result.currency, name };
   } finally {
-    await context.close().catch(() => {});
+    await closeContextSafely(context);
   }
 }
 
@@ -336,54 +369,78 @@ async function debugSingleProduct(browser, url) {
   const outDir = path.join(SCRIPT_DIR, '..', 'debug-output');
   await mkdir(outDir, { recursive: true });
 
+  const log = (msg) => console.log(`[debug] ${msg}`);
+
   const productCode = (url.match(/\/products\/([A-Za-z0-9-]+)/) || [])[1];
   const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
   const page = await context.newPage();
   const candidateJsonResponses = [];
 
-  console.log(`[debug] navigating to ${url}`);
+  log(`navigating to ${url}`);
+
+  // A per-step nav timeout of 15s, as requested, with a slightly larger
+  // outer ceiling as a second line of defense — every step below (goto,
+  // content, screenshot, context.close) is individually bounded too, so
+  // nothing here can hang past its own explicit timeout even if this outer
+  // one is somehow skipped.
+  const DEBUG_NAV_TIMEOUT_MS = 15_000;
+  let html = null;
+
   try {
-    // Generous timeouts here on purpose — this path is for a single manual
-    // debug run, not the bulk job, so there is no need to fail fast. Also
-    // capture *every* JSON response (not just ones matching the product
-    // code) so the actual price API can be identified rather than assumed.
-    await withTimeout(
+    html = await withTimeout(
       collectRenderedPage(page, url, productCode, candidateJsonResponses, {
-        navTimeoutMs: 20_000,
-        settleMs: 3_000,
+        navTimeoutMs: DEBUG_NAV_TIMEOUT_MS,
+        settleMs: 2_000,
         onlyMatchingProductCode: false,
+        log,
       }),
-      25_000,
+      DEBUG_NAV_TIMEOUT_MS + 5_000,
       url
     );
   } catch (err) {
-    console.error(`[debug] navigation/render error (continuing to dump what we have): ${err.message}`);
+    console.error(`[debug] navigation/render failed: ${err.message} — continuing to dump whatever state we have`);
   }
 
-  const html = await page.content().catch(() => '<failed to read page content>');
+  if (html == null) {
+    log('attempting a best-effort content read after the failure above');
+    html = await withTimeout(page.content(), CONTENT_TIMEOUT_MS, 'page.content (fallback)').catch((err) => {
+      console.error(`[debug] fallback content read also failed: ${err.message}`);
+      return '<failed to read page content>';
+    });
+  }
+
   await writeFile(path.join(outDir, 'page.html'), html, 'utf-8');
-  await page.screenshot({ path: path.join(outDir, 'screenshot.png'), fullPage: true }).catch((err) => {
-    console.error(`[debug] screenshot failed: ${err.message}`);
-  });
-  await writeFile(
-    path.join(outDir, 'responses.json'),
-    JSON.stringify(candidateJsonResponses, null, 2),
-    'utf-8'
-  );
+  log('wrote page.html');
+
+  await withTimeout(
+    page.screenshot({ path: path.join(outDir, 'screenshot.png'), fullPage: true, timeout: SCREENSHOT_TIMEOUT_MS }),
+    SCREENSHOT_TIMEOUT_MS + 2_000,
+    'screenshot'
+  )
+    .then(() => log('wrote screenshot.png'))
+    .catch((err) => console.error(`[debug] screenshot failed: ${err.message}`));
+
+  await writeFile(path.join(outDir, 'responses.json'), JSON.stringify(candidateJsonResponses, null, 2), 'utf-8');
+  log('wrote responses.json');
 
   const matchingCount = productCode
     ? candidateJsonResponses.filter((r) => r.url.includes(productCode)).length
     : 0;
-  console.log(
-    `[debug] wrote page.html, screenshot.png, responses.json to ${outDir} ` +
-      `(${candidateJsonResponses.length} JSON response(s) captured, ${matchingCount} with the product code "${productCode}" in their URL)`
+  log(
+    `done: ${candidateJsonResponses.length} JSON response(s) captured, ${matchingCount} with the product code "${productCode}" in their URL`
   );
 
-  await context.close().catch(() => {});
+  await closeContextSafely(context, log);
 }
 
 async function main() {
-  const browser = await chromium.launch();
+  console.log('launching browser');
+  const browser = await withTimeout(
+    chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH, args: ['--no-sandbox', '--disable-dev-shm-usage'] }),
+    BROWSER_LAUNCH_TIMEOUT_MS,
+    'chromium.launch'
+  );
+  console.log('browser launched');
 
   try {
     if (DEBUG_URL) {
@@ -416,8 +473,20 @@ async function main() {
       process.exitCode = 1;
     }
   } finally {
-    await browser.close();
+    await withTimeout(browser.close(), 10_000, 'browser.close').catch((err) => {
+      console.error(`browser.close did not finish cleanly: ${err.message}`);
+    });
   }
 }
 
-main();
+main()
+  .catch((err) => {
+    console.error(`fatal: ${err.stack || err.message}`);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    // Playwright/Chromium can occasionally leave a stray handle open even
+    // after browser.close() resolves, which would otherwise keep the Node
+    // process (and the CI job) alive indefinitely. Force a clean exit.
+    process.exit(process.exitCode ?? 0);
+  });
