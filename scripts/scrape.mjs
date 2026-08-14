@@ -59,6 +59,46 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Best-effort category classification from the product name alone (there is
+// no dedicated category field available from discovery or the product page
+// extraction). Ordered lists, first matching keyword wins; unmatched
+// products fall back to a catch-all bucket. This is inherently approximate —
+// see README for how to adjust it.
+const CATEGORY_KEYWORDS = {
+  uniqlo: [
+    ['インナー・ルームウェア', ['インナー', 'ルームウェア', 'パジャマ', '肌着', 'スリープ', 'ブラ', 'ショーツ下着', 'エアリズム']],
+    ['アウター', ['ジャケット', 'コート', 'ブルゾン', 'ダウン', 'アウター', 'マウンテンパーカ']],
+    ['ビジネス', ['スーツ', 'セットアップ', 'スラックス', 'ビジネス', 'ネクタイ']],
+    ['シャツ', ['シャツ', 'ブラウス']],
+    ['パンツ', ['パンツ', 'デニム', 'ジーンズ', 'スカート', 'ショートパンツ', 'ジョガー']],
+    ['トップス', ['Tシャツ', 'カットソー', 'ニット', 'セーター', 'スウェット', 'パーカ', 'カーディガン', 'ポロシャツ', 'トップス']],
+  ],
+  gu: [
+    ['アウター・パンツ', ['ジャケット', 'コート', 'ブルゾン', 'ダウン', 'アウター', 'パンツ', 'デニム', 'スカート', 'ショートパンツ']],
+    ['トップス', ['Tシャツ', 'カットソー', 'ニット', 'セーター', 'スウェット', 'シャツ', 'ブラウス', 'パーカ', 'カーディガン', 'トップス']],
+  ],
+};
+const FALLBACK_CATEGORY = { uniqlo: 'その他', gu: 'グッズ・その他' };
+
+function categorizeProduct(brand, name) {
+  const fallback = FALLBACK_CATEGORY[brand] || 'その他';
+  if (!name) return fallback;
+  const rules = CATEGORY_KEYWORDS[brand] || [];
+  for (const [category, keywords] of rules) {
+    if (keywords.some((keyword) => name.includes(keyword))) return category;
+  }
+  return fallback;
+}
+
+// event_type priority: a genuinely new product, or one whose price just went
+// up, is more notable than the default "why is this on the dashboard at
+// all" bucket implied by which listing page it came from.
+function classifyEventType({ isNewProduct, previousPrice, currentPrice, listingType }) {
+  if (isNewProduct) return 'new';
+  if (previousPrice != null && currentPrice > previousPrice) return 'price_up';
+  return listingType === 'limited' ? 'limited' : 'markdown';
+}
+
 // Races `promise` against a timer. Crucially, if `promise` loses the race
 // and only rejects *later* (e.g. Playwright's own timeout fires after ours
 // already did), that late rejection is swallowed here instead of becoming
@@ -372,29 +412,44 @@ async function fetchLatestRecordedPrice(productId) {
   return data?.[0] ?? null;
 }
 
-async function processProductUrl(browser, url, brand) {
+// Records one observation per product on *every* scrape (not only when the
+// price changes): the dashboard reads only the latest row per product_id to
+// decide which section/category it currently belongs to, so a product that
+// is still discounted-but-unchanged must keep producing a fresh 'markdown'/
+// 'limited' row, or it would silently vanish from the dashboard after its
+// first price drop. Price history for the sparkline chart is a side benefit
+// of the same rows.
+async function processProductUrl(browser, url, source) {
   const extracted = await renderAndExtract(browser, url);
   if (!extracted) {
     throw new Error('could not extract a price from the rendered page');
   }
 
-  const productId = productIdFromUrl(url, brand);
+  const productId = productIdFromUrl(url, source.brand);
   const latest = await fetchLatestRecordedPrice(productId);
-  if (latest && latest.price === extracted.price && latest.currency === extracted.currency) {
-    return { productId, outcome: 'unchanged' };
-  }
+  const category = categorizeProduct(source.brand, extracted.name);
+  const eventType = classifyEventType({
+    isNewProduct: !latest,
+    previousPrice: latest?.price ?? null,
+    currentPrice: extracted.price,
+    listingType: source.listingType,
+  });
 
   const { error: insertError } = await supabase.from('price_events').insert({
     product_id: productId,
     product_name: extracted.name,
-    brand,
+    brand: source.brand,
+    gender: source.gender ?? null,
+    category,
+    event_type: eventType,
     url,
     price: extracted.price,
     currency: extracted.currency,
   });
   if (insertError) throw insertError;
 
-  return { productId, outcome: 'changed', price: extracted.price, currency: extracted.currency };
+  const priceChanged = !latest || latest.price !== extracted.price || latest.currency !== extracted.currency;
+  return { productId, eventType, priceChanged, price: extracted.price, currency: extracted.currency };
 }
 
 async function processSource(browser, source) {
@@ -407,18 +462,21 @@ async function processSource(browser, source) {
     console.log(`[${source.id}] capping to first ${cap} product(s) (maxProducts)`);
   }
 
-  let changed = 0;
-  let unchanged = 0;
+  let recorded = 0;
+  let priceChanged = 0;
   let failed = 0;
+  const byEventType = { new: 0, markdown: 0, limited: 0, price_up: 0 };
 
   for (const url of targets) {
     try {
-      const result = await processProductUrl(browser, url, source.brand);
-      if (result.outcome === 'changed') {
-        changed++;
-        console.log(`[${source.id}] [${result.productId}] recorded new price event: ${result.price} ${result.currency}`);
-      } else {
-        unchanged++;
+      const result = await processProductUrl(browser, url, source);
+      recorded++;
+      byEventType[result.eventType] = (byEventType[result.eventType] ?? 0) + 1;
+      if (result.priceChanged) {
+        priceChanged++;
+        console.log(
+          `[${source.id}] [${result.productId}] ${result.eventType}: ${result.price} ${result.currency}`
+        );
       }
     } catch (err) {
       failed++;
@@ -427,7 +485,13 @@ async function processSource(browser, source) {
     await sleep(REQUEST_DELAY_MS);
   }
 
-  return { discovered: productUrls.length, changed, unchanged, failed };
+  console.log(
+    `[${source.id}] recorded ${recorded}/${productUrls.length} ` +
+      `(new=${byEventType.new}, markdown=${byEventType.markdown}, limited=${byEventType.limited}, price_up=${byEventType.price_up}), ` +
+      `${priceChanged} price change(s), ${failed} failed`
+  );
+
+  return { discovered: productUrls.length, recorded, priceChanged, failed };
 }
 
 // --- Debug mode: render exactly one product and dump what we saw ---
@@ -557,18 +621,19 @@ async function main() {
       return;
     }
 
-    const totals = { discovered: 0, changed: 0, unchanged: 0, failed: 0 };
+    const totals = { discovered: 0, recorded: 0, priceChanged: 0, failed: 0 };
 
     for (const source of sources) {
       const result = await processSource(browser, source);
       totals.discovered += result.discovered;
-      totals.changed += result.changed;
-      totals.unchanged += result.unchanged;
+      totals.recorded += result.recorded;
+      totals.priceChanged += result.priceChanged;
       totals.failed += result.failed;
     }
 
     console.log(
-      `Done. ${totals.discovered} discovered, ${totals.changed} changed, ${totals.unchanged} unchanged, ${totals.failed} failed.`
+      `Done. ${totals.discovered} discovered, ${totals.recorded} recorded ` +
+        `(${totals.priceChanged} with a price change), ${totals.failed} failed.`
     );
     if (totals.discovered > 0 && totals.failed === totals.discovered) {
       process.exitCode = 1;

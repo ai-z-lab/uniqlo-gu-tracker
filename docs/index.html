@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>UNIQLO / GU 価格トラッカー</title>
-  <meta name="description" content="UNIQLO・GUの商品価格の変動履歴を記録・可視化するトラッカーです。" />
+  <meta name="description" content="UNIQLO・GUの値下げ・期間限定価格・新作・値上げをブランド/性別/カテゴリ別に一覧できる価格トラッカーです。" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏷️</text></svg>" />
   <style>
     :root {
@@ -13,11 +13,28 @@
       --border: #e5e5ea;
       --text: #1c1c1e;
       --text-muted: #6b6b70;
-      --accent: #e4402a;
-      --accent-soft: #fdecea;
       --up: #d1453b;
       --down: #1f8a4c;
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
+
+      /* Brand colors — deliberately distinct hues so a UNIQLO vs GU view is
+         unmistakable at a glance (tab, content accent bar, and every card's
+         left stripe all use this). */
+      --brand-uniqlo: #e2231a;
+      --brand-uniqlo-soft: #fbe4e2;
+      --brand-gu: #0057b8;
+      --brand-gu-soft: #dce9f9;
+
+      /* Status colors (event_type) — intentionally NOT reused as brand
+         colors; kept distinguishable from brand color by being applied as a
+         filled pill *label* near the top of a card, never as the card's
+         left stripe (that's always the brand color). */
+      --status-markdown: #c8342a;
+      --status-limited: #c96a12;
+      --status-new: #1f8a4c;
+      --status-price_up: #7c3aed;
+
+      --tab-bg: #ececef;
     }
 
     @media (prefers-color-scheme: dark) {
@@ -27,11 +44,21 @@
         --border: #33343780;
         --text: #f0f0f2;
         --text-muted: #a0a0a6;
-        --accent: #ff6b52;
-        --accent-soft: #3a2320;
         --up: #ff7a6e;
         --down: #4fd07a;
         --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.3);
+
+        --brand-uniqlo: #ff5449;
+        --brand-uniqlo-soft: #3a1f1c;
+        --brand-gu: #5b9bf5;
+        --brand-gu-soft: #1c2b3f;
+
+        --status-markdown: #ff6f63;
+        --status-limited: #f5a24d;
+        --status-new: #4fd07a;
+        --status-price_up: #b794f6;
+
+        --tab-bg: #232427;
       }
     }
 
@@ -47,7 +74,7 @@
 
     header {
       padding: 2rem 1.25rem 1rem;
-      max-width: 960px;
+      max-width: 1080px;
       margin: 0 auto;
     }
 
@@ -64,7 +91,7 @@
     }
 
     main {
-      max-width: 960px;
+      max-width: 1080px;
       margin: 0 auto;
       padding: 0.5rem 1.25rem 3rem;
     }
@@ -79,37 +106,150 @@
       color: var(--up);
     }
 
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 1rem;
+    /* --- Tabs --- */
+
+    .tabs {
+      display: flex;
+      gap: 0.4rem;
+      padding: 0.3rem;
+      background: var(--tab-bg);
+      border-radius: 12px;
+      margin-bottom: 1rem;
     }
 
-    .card {
+    .tabs button {
+      flex: 1;
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      font-weight: 700;
+      padding: 0.55rem 0.8rem;
+      border-radius: 9px;
+      cursor: pointer;
+      transition: background-color 0.15s, color 0.15s;
+    }
+
+    .brand-tabs button[data-brand="uniqlo"].active {
+      background: var(--brand-uniqlo);
+      color: #fff;
+    }
+    .brand-tabs button[data-brand="gu"].active {
+      background: var(--brand-gu);
+      color: #fff;
+    }
+    .gender-tabs button.active {
       background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 1.1rem 1.2rem;
+      color: var(--text);
       box-shadow: var(--shadow);
     }
 
-    .card .brand {
-      display: inline-block;
-      font-size: 0.7rem;
+    /* --- Brand-colored content frame: everything below the tabs is washed
+       in the active brand's color via this top accent bar + left rule, so
+       "which brand am I looking at" never depends on remembering the tab
+       state. --- */
+
+    #content {
+      border-top: 4px solid var(--brand-color, var(--brand-uniqlo));
+      padding-top: 1.25rem;
+    }
+
+    .section {
+      margin-bottom: 2rem;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      margin-bottom: 0.9rem;
+      padding-bottom: 0.4rem;
+      border-bottom: 2px solid var(--status-color);
+    }
+
+    .section-header .label {
+      font-size: 1.05rem;
+      font-weight: 800;
+      color: var(--status-color);
+    }
+
+    .section-header .count {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    .category-group {
+      margin-bottom: 1.4rem;
+    }
+
+    .category-group h3 {
+      font-size: 0.85rem;
       font-weight: 700;
-      letter-spacing: 0.04em;
-      color: var(--accent);
-      background: var(--accent-soft);
-      border-radius: 999px;
-      padding: 0.15rem 0.55rem;
+      color: var(--text-muted);
+      margin: 0 0 0.6rem;
+      padding-left: 0.1rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 0.9rem;
+    }
+
+    /* --- Card --- */
+
+    .card {
+      position: relative;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1rem 1.1rem 1rem 1.3rem;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    /* Brand stripe: always on the left edge, always the brand color —
+       position never changes, so it reads as "brand" even when a status
+       pill happens to share a similar hue. */
+    .card::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 5px;
+      background: var(--brand-color, var(--brand-uniqlo));
+    }
+
+    .card .top-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.5rem;
       margin-bottom: 0.5rem;
-      text-transform: uppercase;
+    }
+
+    /* Status badge: a filled pill with text, positioned top-right — a
+       different shape *and* position from the brand stripe, so brand vs
+       status stay visually distinct even when their colors are close. */
+    .status-badge {
+      flex-shrink: 0;
+      display: inline-block;
+      font-size: 0.68rem;
+      font-weight: 700;
+      color: #fff;
+      background: var(--status-color);
+      border-radius: 999px;
+      padding: 0.2rem 0.6rem;
+      white-space: nowrap;
     }
 
     .card h2 {
-      font-size: 1rem;
-      margin: 0 0 0.15rem;
+      font-size: 0.95rem;
+      margin: 0;
       font-weight: 600;
+      line-height: 1.35;
     }
 
     .card a.product-link {
@@ -129,13 +269,13 @@
     }
 
     .price {
-      font-size: 1.6rem;
+      font-size: 1.5rem;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
     }
 
     .delta {
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
     }
@@ -145,24 +285,23 @@
 
     .updated {
       color: var(--text-muted);
-      font-size: 0.78rem;
+      font-size: 0.75rem;
       margin-bottom: 0.6rem;
     }
 
     canvas {
       width: 100% !important;
-      height: 90px !important;
+      height: 80px !important;
     }
 
     .empty {
-      grid-column: 1 / -1;
       text-align: center;
-      padding: 3rem 1rem;
+      padding: 2.5rem 1rem;
       color: var(--text-muted);
     }
 
     footer {
-      max-width: 960px;
+      max-width: 1080px;
       margin: 0 auto;
       padding: 1rem 1.25rem 2.5rem;
       color: var(--text-muted);
@@ -175,14 +314,24 @@
 <body>
   <header>
     <h1>UNIQLO / GU 価格トラッカー</h1>
-    <p>登録した商品の価格を毎日自動でチェックし、変動履歴を記録しています。</p>
+    <p>ブランド・性別・値下げ/期間限定/新作/値上げ・カテゴリ別に商品を一覧できます。</p>
   </header>
   <main>
+    <div class="tabs brand-tabs" id="brand-tabs">
+      <button type="button" data-brand="uniqlo">UNIQLO</button>
+      <button type="button" data-brand="gu">GU</button>
+    </div>
+    <div class="tabs gender-tabs" id="gender-tabs">
+      <button type="button" data-gender="men">MEN</button>
+      <button type="button" data-gender="women">WOMEN</button>
+    </div>
+
     <div id="status">読み込み中…</div>
-    <div id="grid" class="grid"></div>
+    <div id="content"></div>
   </main>
   <footer>
     Data updates once a day via GitHub Actions. Prices are best-effort and may not reflect the current live price.
+    カテゴリはUNIQLO/GUの正式な分類ではなく、商品名からの推定(簡易キーワード判定)です。
   </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>

@@ -1,16 +1,20 @@
 [
   {
-    "id": "uniqlo-sale",
+    "id": "uniqlo-sale-women",
     "brand": "uniqlo",
-    "label": "UNIQLO セール一覧(例・要確認)",
-    "urls": ["https://www.uniqlo.com/jp/ja/feature/sale"],
+    "gender": "women",
+    "listingType": "sale",
+    "label": "UNIQLO 値下げ商品(レディース)(例・要確認)",
+    "urls": ["https://www.uniqlo.com/jp/ja/feature/sale/women"],
     "maxProducts": 200
   },
   {
-    "id": "gu-sale",
+    "id": "gu-limited-men",
     "brand": "gu",
-    "label": "GU セール一覧(例・要確認)",
-    "urls": ["https://www.gu-global.com/jp/ja/feature/sale"],
+    "gender": "men",
+    "listingType": "limited",
+    "label": "GU 期間限定価格(メンズ)(例・要確認)",
+    "urls": ["https://www.gu-global.com/jp/ja/feature/limited-offers/men"],
     "maxProducts": 200
   }
 ]

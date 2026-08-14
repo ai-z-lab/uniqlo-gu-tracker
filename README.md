@@ -11,11 +11,11 @@ UNIQLO / GU の「セール一覧」「期間限定価格一覧」などのカ�
 
 ```
 config/sources.json           巡回するカテゴリ・一覧ページの一覧(編集して使う)
-supabase/migrations/          price_events テーブルの作成SQL
-scripts/scrape.mjs            一覧ページから商品を発見し、価格を取得して Supabase に記録するスクリプト
+supabase/migrations/          price_events テーブルの作成・更新SQL
+scripts/scrape.mjs            一覧ページから商品を発見し、価格・カテゴリ等を Supabase に記録するスクリプト
 .github/workflows/scrape.yml  毎日実行するスクレイパー(GitHub Actions)
 .github/workflows/pages.yml   docs/ を GitHub Pages にデプロイ
-docs/                         公開する静的サイト(Supabase から直接データ取得)
+docs/                         公開する静的サイト(ブランド/性別/セクション/カテゴリ別ダッシュボード、Supabase から直接データ取得)
 ```
 
 - 商品の発見は一覧ページ内の `href="...  /products/ ..."` 形式のリンクを
@@ -34,6 +34,10 @@ docs/                         公開する静的サイト(Supabase から直接�
 - 価格の書き込みは GitHub Actions 上のスクレイパーが **service_role key**
   (RLSをバイパスする秘匿キー)を使って行います。このキーはリポジトリに
   コミットせず、GitHub Secrets にのみ保存します。
+- ダッシュボードは UNIQLO/GU タブ → MEN/WOMEN タブ → 新作/値下げ/期間限定/
+  値上げのセクション → カテゴリ、の階層で商品を表示します。この分類には
+  `price_events` の `gender` / `event_type` / `category` 列を使います
+  (詳細は下記「分類ロジックについて」を参照)。
 
 ## セットアップ(このリポジトリのコードだけでは完結しない、手動で必要な3ステップ)
 
@@ -42,9 +46,15 @@ Supabase のテーブル作成・GitHub Pages の有効化には、このセッ�
 
 ### 1. Supabase に `price_events` テーブルを作成する
 
-Supabase ダッシュボード → 該当プロジェクト → **SQL Editor** で、
-[`supabase/migrations/0001_create_price_events.sql`](./supabase/migrations/0001_create_price_events.sql)
-の内容をそのまま貼り付けて実行してください。
+Supabase ダッシュボード → 該当プロジェクト → **SQL Editor** で、以下を
+この順番で貼り付けて実行してください(新規セットアップでも、既に
+`0001` を実行済みの場合でも、`0002` は `add column if not exists` なので
+そのまま追加実行してOKです)。
+
+1. [`supabase/migrations/0001_create_price_events.sql`](./supabase/migrations/0001_create_price_events.sql)
+2. [`supabase/migrations/0002_add_category_gender_event_type.sql`](./supabase/migrations/0002_add_category_gender_event_type.sql)
+   — `category` / `gender` / `event_type` 列を追加(ダッシュボードの
+   タブ・セクション分けに必要)
 
 ### 2. スクレイパー用の Secrets を GitHub リポジトリに追加する
 
@@ -75,12 +85,14 @@ Settings → Pages → Build and deployment → Source を **GitHub Actions** �
 
 ```json
 {
-  "id": "uniqlo-sale",
+  "id": "uniqlo-sale-women",
   "brand": "uniqlo",
-  "label": "UNIQLO セール一覧(表示用・任意)",
+  "gender": "women",
+  "listingType": "sale",
+  "label": "UNIQLO 値下げ商品(レディース)(表示用・任意)",
   "urls": [
-    "https://www.uniqlo.com/jp/ja/feature/sale",
-    "https://www.uniqlo.com/jp/ja/feature/sale?page=2"
+    "https://www.uniqlo.com/jp/ja/feature/sale/women",
+    "https://www.uniqlo.com/jp/ja/feature/sale/women?page=2"
   ],
   "maxProducts": 200
 }
@@ -88,6 +100,10 @@ Settings → Pages → Build and deployment → Source を **GitHub Actions** �
 
 - `id`: `price_events.product_id` の接頭辞にも使う一意な文字列(自由に決めてOK)
 - `brand`: `"uniqlo"` または `"gu"`
+- `gender`: `"men"` または `"women"`。ダッシュボードの MEN/WOMEN タブに使われます
+- `listingType`: `"sale"`(値下げ)または `"limited"`(期間限定価格)。ダッシュ
+  ボードの「値下げ」「期間限定」セクション振り分けの基準になります(下記
+  「分類ロジックについて」を参照)
 - `urls`: 巡回する一覧ページのURL配列。ページネーションがある場合は、2ページ目
   以降のURLも配列に追加してください(自動ページ送りは行いません)
 - `maxProducts`: 1つの `source` あたり最大何商品まで追跡するかの上限(省略時 200)。
@@ -104,3 +120,32 @@ Settings → Pages → Build and deployment → Source を **GitHub Actions** �
 追加後、`.github/workflows/scrape.yml` の定期実行(毎日 06:00 JST)を待つか、
 Actions タブから `Scrape prices` を手動実行 (workflow_dispatch) すると
 反映されます。
+
+## 分類ロジックについて
+
+ダッシュボードは `price_events` の各商品について**最新1件のレコード**の
+`event_type` / `category` / `gender` を見て、どのセクション・カテゴリに
+表示するかを決めます。そのため、価格が変わっていなくても**毎回のスクレイ
+プでその商品の行を記録**します(以前は価格が変わった時だけ記録していまし
+たが、そうすると「値下げ中のまま価格が動かない商品」がダッシュボードから
+消えてしまうため変更しました)。
+
+`event_type` は `scripts/scrape.mjs` の `classifyEventType()` が以下の優先
+順位で決めます:
+
+1. その商品を過去に一度も記録したことがない → `new`(新作)
+2. 前回記録した価格より値上がりしている → `price_up`(値上げ)
+3. それ以外 → 発見元の `source.listingType` に応じて `markdown`(値下げ)
+   または `limited`(期間限定)
+
+`category` は商品名からのキーワード一致による推定です
+(`scripts/scrape.mjs` の `CATEGORY_KEYWORDS`)。UNIQLO/GU の正式なカテゴリ
+データを取得しているわけではないため、精度は完璧ではありません。一致しな
+かった商品は UNIQLO なら「その他」、GU なら「グッズ・その他」に入ります。
+分類がずれる場合は `CATEGORY_KEYWORDS` のキーワードを編集して調整してくだ
+さい。
+
+なお、`0002` のマイグレーション適用前に記録された古い行には
+`category`/`gender`/`event_type` が入っていません。次回以降のスクレイプで
+上書きされる(同じ product_id で新しい行が追加される)まで、そうした古い
+商品はダッシュボードのどのタブにも表示されません。
