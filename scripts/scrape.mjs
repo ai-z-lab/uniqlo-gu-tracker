@@ -128,13 +128,14 @@ function findPriceInObject(obj, depth = 0) {
   if (depth > 8 || obj == null || typeof obj !== 'object') return null;
   for (const key of Object.keys(obj)) {
     const value = obj[key];
-    if (
-      /^(price|currentPrice|salePrice|sellingPrice|listPrice|base|amount)$/i.test(key) &&
-      typeof value === 'number' &&
-      value > 0 &&
-      value < 1_000_000
-    ) {
-      return value;
+    if (/^(price|currentPrice|salePrice|sellingPrice|listPrice|base|amount)$/i.test(key)) {
+      // UNIQLO/GU's own JSON-LD encodes price as a numeric *string*
+      // (e.g. "1990"), so plain typeof-number checks miss it — accept
+      // any value that cleanly parses to a plausible JPY amount.
+      const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+      if (!Number.isNaN(numeric) && numeric > 0 && numeric < 1_000_000) {
+        return numeric;
+      }
     }
     if (value && typeof value === 'object') {
       const found = findPriceInObject(value, depth + 1);
@@ -164,14 +165,31 @@ function parseJsonLdProducts(html) {
   return products;
 }
 
+function extractPriceFromOffers(offersLike) {
+  if (!offersLike) return null;
+  const offers = Array.isArray(offersLike) ? offersLike : [offersLike];
+  for (const offer of offers) {
+    if (!offer) continue;
+    const price = offer.price ?? offer.lowPrice;
+    if (price != null && !Number.isNaN(Number(price))) {
+      return { price: Number(price), currency: offer.priceCurrency || 'JPY' };
+    }
+  }
+  return null;
+}
+
 function extractPriceFromRenderedHtml(html) {
   for (const product of parseJsonLdProducts(html)) {
-    if (!product.offers) continue;
-    const offers = Array.isArray(product.offers) ? product.offers : [product.offers];
-    for (const offer of offers) {
-      const price = offer.price ?? offer.lowPrice;
-      if (price != null) {
-        return { price: Number(price), currency: offer.priceCurrency || 'JPY' };
+    // The price is usually on the product's own `offers`, but UNIQLO/GU put
+    // it one level down instead: each color/size combination is a separate
+    // entry in `hasVariant`, and *that* variant carries `offers.price`.
+    const direct = extractPriceFromOffers(product.offers);
+    if (direct) return direct;
+
+    if (Array.isArray(product.hasVariant)) {
+      for (const variant of product.hasVariant) {
+        const variantPrice = extractPriceFromOffers(variant?.offers);
+        if (variantPrice) return variantPrice;
       }
     }
   }
