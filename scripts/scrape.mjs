@@ -145,52 +145,85 @@ function findPriceInObject(obj, depth = 0) {
   return null;
 }
 
-function parseJsonLdProducts(html) {
+// Matches schema.org Product *and* ProductGroup — the canonical schema.org
+// pattern for a page with size/color variants is actually a root
+// ProductGroup whose hasVariant array holds the individual Product entries,
+// not a Product with hasVariant. Also tolerates @type being an array
+// (some sites emit e.g. @type: ["Product"]).
+function isProductLikeType(type) {
+  const types = Array.isArray(type) ? type : [type];
+  return types.includes('Product') || types.includes('ProductGroup');
+}
+
+function parseJsonLdProducts(html, log = () => {}) {
   const products = [];
-  const ldMatches = html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
-  for (const match of ldMatches) {
+  const scriptMatches = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+  log(`found ${scriptMatches.length} <script type="application/ld+json"> block(s)`);
+
+  scriptMatches.forEach((match, i) => {
+    let data;
     try {
-      const data = JSON.parse(match[1].trim());
-      const roots = Array.isArray(data) ? data : [data];
-      for (const root of roots) {
-        const candidates = root['@graph'] ? root['@graph'] : [root];
-        for (const item of candidates) {
-          if (item['@type'] === 'Product') products.push(item);
+      data = JSON.parse(match[1].trim());
+    } catch (err) {
+      log(`  [ld+json #${i}] JSON.parse failed: ${err.message}`);
+      return;
+    }
+    const roots = Array.isArray(data) ? data : [data];
+    for (const root of roots) {
+      const candidates = root['@graph'] ? root['@graph'] : [root];
+      for (const item of candidates) {
+        const type = item && item['@type'];
+        if (isProductLikeType(type)) {
+          products.push(item);
+          log(
+            `  [ld+json #${i}] found @type=${JSON.stringify(type)}, ` +
+              `has offers=${Boolean(item.offers)}, hasVariant=${Array.isArray(item.hasVariant) ? item.hasVariant.length : false}`
+          );
+        } else if (type) {
+          log(`  [ld+json #${i}] skipping @type=${JSON.stringify(type)} (not Product/ProductGroup)`);
         }
       }
-    } catch {
-      // malformed JSON-LD block, try the next one
     }
-  }
+  });
+
   return products;
 }
 
-function extractPriceFromOffers(offersLike) {
-  if (!offersLike) return null;
+function extractPriceFromOffers(offersLike, log = () => {}, source = 'offers') {
+  if (!offersLike) {
+    log(`    ${source}: absent`);
+    return null;
+  }
   const offers = Array.isArray(offersLike) ? offersLike : [offersLike];
-  for (const offer of offers) {
+  for (const [i, offer] of offers.entries()) {
     if (!offer) continue;
     const price = offer.price ?? offer.lowPrice;
     if (price != null && !Number.isNaN(Number(price))) {
+      log(`    ${source}[${i}]: price=${JSON.stringify(price)} (type ${typeof price}) -> using it`);
       return { price: Number(price), currency: offer.priceCurrency || 'JPY' };
     }
+    log(`    ${source}[${i}]: no usable price field (keys: ${Object.keys(offer).join(', ')})`);
   }
   return null;
 }
 
-function extractPriceFromRenderedHtml(html) {
-  for (const product of parseJsonLdProducts(html)) {
-    // The price is usually on the product's own `offers`, but UNIQLO/GU put
-    // it one level down instead: each color/size combination is a separate
-    // entry in `hasVariant`, and *that* variant carries `offers.price`.
-    const direct = extractPriceFromOffers(product.offers);
+function extractPriceFromRenderedHtml(html, log = () => {}) {
+  const products = parseJsonLdProducts(html, log);
+  log(`extractPriceFromRenderedHtml: ${products.length} Product/ProductGroup candidate(s) from JSON-LD`);
+
+  for (const [i, product] of products.entries()) {
+    log(`  candidate #${i} (@type=${JSON.stringify(product['@type'])}):`);
+    const direct = extractPriceFromOffers(product.offers, log, `candidate #${i} .offers`);
     if (direct) return direct;
 
     if (Array.isArray(product.hasVariant)) {
-      for (const variant of product.hasVariant) {
-        const variantPrice = extractPriceFromOffers(variant?.offers);
+      log(`  candidate #${i}: checking ${product.hasVariant.length} hasVariant entries`);
+      for (const [v, variant] of product.hasVariant.entries()) {
+        const variantPrice = extractPriceFromOffers(variant?.offers, log, `candidate #${i} .hasVariant[${v}].offers`);
         if (variantPrice) return variantPrice;
       }
+    } else {
+      log(`  candidate #${i}: no hasVariant array`);
     }
   }
 
@@ -198,19 +231,28 @@ function extractPriceFromRenderedHtml(html) {
     html.match(/<meta[^>]+property=["']product:price:amount["'][^>]+content=["']([\d.]+)["']/i) ||
     html.match(/<meta[^>]+content=["']([\d.]+)["'][^>]+property=["']product:price:amount["']/i);
   if (metaPrice) {
+    log(`falling back to product:price:amount meta tag: ${metaPrice[1]}`);
     const currencyMatch = html.match(/<meta[^>]+property=["']product:price:currency["'][^>]+content=["']([A-Z]{3})["']/i);
     return { price: Number(metaPrice[1]), currency: currencyMatch ? currencyMatch[1] : 'JPY' };
   }
+  log('no product:price:amount meta tag found');
 
   const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
   if (nextDataMatch) {
+    log('found __NEXT_DATA__ script, searching it for a price field');
     try {
       const data = JSON.parse(nextDataMatch[1]);
       const price = findPriceInObject(data);
-      if (price != null) return { price, currency: 'JPY' };
-    } catch {
-      // ignore malformed payload
+      if (price != null) {
+        log(`__NEXT_DATA__: found price=${price}`);
+        return { price, currency: 'JPY' };
+      }
+      log('__NEXT_DATA__: parsed OK but no plausible price field found');
+    } catch (err) {
+      log(`__NEXT_DATA__: JSON.parse failed: ${err.message}`);
     }
+  } else {
+    log('no __NEXT_DATA__ script found');
   }
 
   return null;
@@ -272,7 +314,7 @@ async function closeContextSafely(context, log = () => {}) {
   }
 }
 
-async function renderAndExtract(browser, url) {
+async function renderAndExtract(browser, url, { log = () => {}, renderOptions = {}, outerTimeoutMs = PRODUCT_TIMEOUT_MS } = {}) {
   const productCode = (url.match(/\/products\/([A-Za-z0-9-]+)/) || [])[1];
   const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
   const page = await context.newPage();
@@ -285,15 +327,18 @@ async function renderAndExtract(browser, url) {
 
   try {
     const renderedHtml = await withTimeout(
-      collectRenderedPage(page, url, productCode, candidateJsonResponses),
-      PRODUCT_TIMEOUT_MS,
+      collectRenderedPage(page, url, productCode, candidateJsonResponses, { log, ...renderOptions }),
+      outerTimeoutMs,
       url
     );
 
-    let result = extractPriceFromRenderedHtml(renderedHtml);
+    log('--- price extraction from rendered HTML (JSON-LD / meta / __NEXT_DATA__) ---');
+    let result = extractPriceFromRenderedHtml(renderedHtml, log);
     if (!result) {
-      for (const { body } of candidateJsonResponses) {
+      log(`--- rendered HTML gave nothing, trying ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
+      for (const { url: responseUrl, body } of candidateJsonResponses) {
         const price = findPriceInObject(body);
+        log(`  response ${responseUrl}: ${price != null ? `found price=${price}` : 'no plausible price field'}`);
         if (price != null) {
           result = { price, currency: 'JPY' };
           break;
@@ -301,12 +346,16 @@ async function renderAndExtract(browser, url) {
       }
     }
 
-    if (!result) return null;
+    if (!result) {
+      log('extraction FAILED: no price found via any strategy');
+      return null;
+    }
 
     const name = extractNameFromRenderedHtml(renderedHtml);
+    log(`extraction SUCCEEDED: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}`);
     return { price: result.price, currency: result.currency, name };
   } finally {
-    await closeContextSafely(context);
+    await closeContextSafely(context, log);
   }
 }
 
@@ -445,8 +494,42 @@ async function debugSingleProduct(browser, url) {
     ? candidateJsonResponses.filter((r) => r.url.includes(productCode)).length
     : 0;
   log(
-    `done: ${candidateJsonResponses.length} JSON response(s) captured, ${matchingCount} with the product code "${productCode}" in their URL`
+    `captured ${candidateJsonResponses.length} JSON response(s), ${matchingCount} with the product code "${productCode}" in their URL`
   );
+
+  // Run the *actual* extraction logic (same functions the real scraper
+  // uses) against what we just rendered, logging every decision point, so
+  // a mismatch between "the data is clearly in page.html" and "the script
+  // still says it can't find it" is visible directly instead of guessed at.
+  const traceLines = [];
+  const trace = (msg) => {
+    traceLines.push(msg);
+    log(`[extract] ${msg}`);
+  };
+
+  trace('--- price extraction from rendered HTML (JSON-LD / meta / __NEXT_DATA__) ---');
+  let result = extractPriceFromRenderedHtml(html, trace);
+  if (!result) {
+    trace(`--- rendered HTML gave nothing, trying ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
+    for (const { url: responseUrl, body } of candidateJsonResponses) {
+      const price = findPriceInObject(body);
+      trace(`  response ${responseUrl}: ${price != null ? `found price=${price}` : 'no plausible price field'}`);
+      if (price != null) {
+        result = { price, currency: 'JPY' };
+        break;
+      }
+    }
+  }
+
+  if (result) {
+    const name = extractNameFromRenderedHtml(html);
+    trace(`RESULT: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}`);
+  } else {
+    trace('RESULT: no price found via any strategy');
+  }
+
+  await writeFile(path.join(outDir, 'extraction-trace.txt'), traceLines.join('\n'), 'utf-8');
+  log('wrote extraction-trace.txt');
 
   await closeContextSafely(context, log);
 }
