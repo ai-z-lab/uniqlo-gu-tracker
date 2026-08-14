@@ -9,6 +9,7 @@
     "scrape": "node scrape.mjs"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.4"
+    "@supabase/supabase-js": "^2.45.4",
+    "playwright": "^1.48.0"
   }
 }
