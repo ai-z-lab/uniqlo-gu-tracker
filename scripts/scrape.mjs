@@ -489,13 +489,29 @@ function isSameUtcCalendarDay(isoA, isoB) {
 // it is updated in place rather than inserted again (see
 // isSameUtcCalendarDay) so repeated runs on the same day don't create
 // multiple points on the same day.
-async function processProductUrl(browser, url, source) {
+// `processedProductIds` is shared across the *entire* run (every source),
+// not just this one. discoverProductUrls dedupes by exact URL, but listing
+// pages commonly link the same base product once per color/size variant
+// (?colorDisplayCode=... etc.), and productIdFromUrl collapses all of those
+// down to one product_id — so without this guard, the same product could be
+// rendered and recorded multiple times in a single run. Re-extracting a
+// second time isn't guaranteed to yield the exact same price (variant
+// ordering in the page's own data isn't guaranteed stable), so a spurious
+// second observation could misfire classifyEventType as 'price_up' on a
+// product that was only just seen for the very first time this run. A
+// product is also commonly cross-listed on more than one *source* (e.g.
+// both the "sale" and "limited" pages) for the same reason.
+async function processProductUrl(browser, url, source, processedProductIds) {
+  const productId = productIdFromUrl(url, source.brand);
+  if (processedProductIds.has(productId)) {
+    return { productId, skipped: true };
+  }
+
   const extracted = await renderAndExtract(browser, url);
   if (!extracted) {
     throw new Error('could not extract a price from the rendered page');
   }
 
-  const productId = productIdFromUrl(url, source.brand);
   const latest = await fetchLatestRecordedPrice(productId);
   const category = categorizeProduct(source.brand, extracted.name);
   const eventType = classifyEventType({
@@ -528,11 +544,15 @@ async function processProductUrl(browser, url, source) {
     if (insertError) throw insertError;
   }
 
+  // Only mark as done-this-run on success, so if this attempt failed we'd
+  // still want a later duplicate URL for the same product to get a chance.
+  processedProductIds.add(productId);
+
   const priceChanged = !latest || latest.price !== extracted.price || latest.currency !== extracted.currency;
   return { productId, eventType, priceChanged, price: extracted.price, currency: extracted.currency };
 }
 
-async function processSource(browser, source) {
+async function processSource(browser, source, processedProductIds) {
   const productUrls = await discoverProductUrls(source);
   console.log(`[${source.id}] discovered ${productUrls.length} product page(s)`);
 
@@ -545,11 +565,16 @@ async function processSource(browser, source) {
   let recorded = 0;
   let priceChanged = 0;
   let failed = 0;
+  let skipped = 0;
   const byEventType = { new: 0, markdown: 0, limited: 0, price_up: 0 };
 
   for (const url of targets) {
     try {
-      const result = await processProductUrl(browser, url, source);
+      const result = await processProductUrl(browser, url, source, processedProductIds);
+      if (result.skipped) {
+        skipped++;
+        continue; // no request was made for this one, so no need to rate-limit
+      }
       recorded++;
       byEventType[result.eventType] = (byEventType[result.eventType] ?? 0) + 1;
       if (result.priceChanged) {
@@ -568,10 +593,10 @@ async function processSource(browser, source) {
   console.log(
     `[${source.id}] recorded ${recorded}/${productUrls.length} ` +
       `(new=${byEventType.new}, markdown=${byEventType.markdown}, limited=${byEventType.limited}, price_up=${byEventType.price_up}), ` +
-      `${priceChanged} price change(s), ${failed} failed`
+      `${priceChanged} price change(s), ${skipped} skipped (already processed this run), ${failed} failed`
   );
 
-  return { discovered: productUrls.length, recorded, priceChanged, failed };
+  return { discovered: productUrls.length, recorded, priceChanged, skipped, failed };
 }
 
 // --- Debug mode: render exactly one product and dump what we saw ---
@@ -704,19 +729,22 @@ async function main() {
       return;
     }
 
-    const totals = { discovered: 0, recorded: 0, priceChanged: 0, failed: 0 };
+    const totals = { discovered: 0, recorded: 0, priceChanged: 0, skipped: 0, failed: 0 };
+    // Shared across every source in this run — see processProductUrl for why.
+    const processedProductIds = new Set();
 
     for (const source of sources) {
-      const result = await processSource(browser, source);
+      const result = await processSource(browser, source, processedProductIds);
       totals.discovered += result.discovered;
       totals.recorded += result.recorded;
       totals.priceChanged += result.priceChanged;
+      totals.skipped += result.skipped;
       totals.failed += result.failed;
     }
 
     console.log(
       `Done. ${totals.discovered} discovered, ${totals.recorded} recorded ` +
-        `(${totals.priceChanged} with a price change), ${totals.failed} failed.`
+        `(${totals.priceChanged} with a price change), ${totals.skipped} skipped as duplicates, ${totals.failed} failed.`
     );
     if (totals.discovered > 0 && totals.failed === totals.discovered) {
       process.exitCode = 1;

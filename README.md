@@ -146,6 +146,15 @@ Actions タブから `Scrape prices` を手動実行 (workflow_dispatch) する�
 3. それ以外 → 発見元の `source.listingType` に応じて `markdown`(値下げ)
    または `limited`(期間限定)
 
+「過去に記録したことがあるか」は Supabase 上の既存データで判定するため、
+**同じ商品を同じ実行内で2回処理してしまうと、1回目の記録直後に2回目が
+「既存あり」と誤認してしまいます**。一覧ページは同じ商品を色・サイズ違い
+で複数回リンクしていることが多いため(`?colorDisplayCode=...` などクエリ
+パラメータ違いの同一商品)、`product_id`(商品コードのみで決まる)は同じ
+でもURLとしては別物として発見されます。これに対応するため、スクレイパー
+は実行全体を通して処理済みの `product_id` を記録しておき、2回目以降の
+出現はスキップします(`scripts/scrape.mjs` の `processedProductIds`)。
+
 `category` は商品名からのキーワード一致による推定です
 (`scripts/scrape.mjs` の `CATEGORY_KEYWORDS`)。UNIQLO/GU の正式なカテゴリ
 データを取得しているわけではないため、精度は完璧ではありません。一致しな
