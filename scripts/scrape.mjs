@@ -10,31 +10,56 @@
 // recently recorded one for that product. Run by .github/workflows/scrape.yml
 // on a schedule (needs full internet access and a headless browser, so it
 // must run in GitHub Actions rather than locally in a sandboxed shell).
+//
+// Debugging a single product: set DEBUG_URL to a product page URL and run
+// this script. Instead of the normal sources.json loop, it renders just
+// that one page and writes debug-output/page.html, debug-output/screenshot.png,
+// and debug-output/responses.json (captured JSON network responses) so the
+// actual DOM/API shape can be inspected without guessing.
 
 import { createClient } from '@supabase/supabase-js';
 import { chromium } from 'playwright';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const DEBUG_URL = process.env.DEBUG_URL || null;
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+if (!DEBUG_URL && (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)) {
   console.error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set as environment variables.');
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) : null;
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 const DEFAULT_MAX_PRODUCTS_PER_SOURCE = 200;
-const REQUEST_DELAY_MS = 250;
-const PAGE_NAVIGATION_TIMEOUT_MS = 30_000;
-const NETWORK_IDLE_TIMEOUT_MS = 8_000;
-const RENDER_SETTLE_MS = 1_200;
+const REQUEST_DELAY_MS = 150;
+
+// Hard time budget for rendering + extracting a single product page. Kept
+// short and enforced with a real timeout (not just Playwright's per-call
+// timeouts) because a page that never reaches "networkidle" — common with
+// sites that keep analytics/polling connections open — must not be allowed
+// to stall the whole run.
+const PRODUCT_TIMEOUT_MS = 10_000;
+const NAV_TIMEOUT_MS = 7_000;
+const RENDER_SETTLE_MS = 1_000;
+
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms (${label})`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 // --- Discovery: find product page links on a listing/category page ---
 // (Listing pages have been confirmed to include product links in the
@@ -178,9 +203,26 @@ function productIdFromUrl(url, brand) {
 
 // --- Rendering a product page and extracting price/name from it ---
 
+async function collectRenderedPage(page, url, productCode, candidateJsonResponses, { navTimeoutMs = NAV_TIMEOUT_MS, settleMs = RENDER_SETTLE_MS, onlyMatchingProductCode = true } = {}) {
+  page.on('response', async (response) => {
+    try {
+      const contentType = response.headers()['content-type'] || '';
+      if (!contentType.includes('application/json')) return;
+      if (onlyMatchingProductCode && productCode && !response.url().includes(productCode)) return;
+      const json = await response.json();
+      candidateJsonResponses.push({ url: response.url(), body: json });
+    } catch {
+      // response body not readable as JSON, or already consumed — ignore
+    }
+  });
+
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
+  await page.waitForTimeout(settleMs);
+  return page.content();
+}
+
 async function renderAndExtract(browser, url) {
   const productCode = (url.match(/\/products\/([A-Za-z0-9-]+)/) || [])[1];
-
   const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
   const page = await context.newPage();
 
@@ -189,33 +231,18 @@ async function renderAndExtract(browser, url) {
   // recommendation/cross-sell widget's API call for a *different* product
   // could be mistaken for this one's price.
   const candidateJsonResponses = [];
-  page.on('response', async (response) => {
-    try {
-      const contentType = response.headers()['content-type'] || '';
-      if (!contentType.includes('application/json')) return;
-      if (productCode && !response.url().includes(productCode)) return;
-      const json = await response.json();
-      candidateJsonResponses.push(json);
-    } catch {
-      // response body not readable as JSON, or already consumed — ignore
-    }
-  });
 
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_NAVIGATION_TIMEOUT_MS });
-    try {
-      await page.waitForLoadState('networkidle', { timeout: NETWORK_IDLE_TIMEOUT_MS });
-    } catch {
-      // some pages keep background polling alive and never go idle; that's fine
-    }
-    await page.waitForTimeout(RENDER_SETTLE_MS);
-
-    const renderedHtml = await page.content();
+    const renderedHtml = await withTimeout(
+      collectRenderedPage(page, url, productCode, candidateJsonResponses),
+      PRODUCT_TIMEOUT_MS,
+      url
+    );
 
     let result = extractPriceFromRenderedHtml(renderedHtml);
     if (!result) {
-      for (const json of candidateJsonResponses) {
-        const price = findPriceInObject(json);
+      for (const { body } of candidateJsonResponses) {
+        const price = findPriceInObject(body);
         if (price != null) {
           result = { price, currency: 'JPY' };
           break;
@@ -228,7 +255,7 @@ async function renderAndExtract(browser, url) {
     const name = extractNameFromRenderedHtml(renderedHtml);
     return { price: result.price, currency: result.currency, name };
   } finally {
-    await context.close();
+    await context.close().catch(() => {});
   }
 }
 
@@ -303,19 +330,77 @@ async function processSource(browser, source) {
   return { discovered: productUrls.length, changed, unchanged, failed };
 }
 
-async function main() {
-  const raw = await readFile(new URL('../config/sources.json', import.meta.url), 'utf-8');
-  const sources = JSON.parse(raw);
+// --- Debug mode: render exactly one product and dump what we saw ---
 
-  if (sources.length === 0) {
-    console.log('No sources configured in config/sources.json — nothing to scrape.');
-    return;
+async function debugSingleProduct(browser, url) {
+  const outDir = path.join(SCRIPT_DIR, '..', 'debug-output');
+  await mkdir(outDir, { recursive: true });
+
+  const productCode = (url.match(/\/products\/([A-Za-z0-9-]+)/) || [])[1];
+  const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
+  const page = await context.newPage();
+  const candidateJsonResponses = [];
+
+  console.log(`[debug] navigating to ${url}`);
+  try {
+    // Generous timeouts here on purpose — this path is for a single manual
+    // debug run, not the bulk job, so there is no need to fail fast. Also
+    // capture *every* JSON response (not just ones matching the product
+    // code) so the actual price API can be identified rather than assumed.
+    await withTimeout(
+      collectRenderedPage(page, url, productCode, candidateJsonResponses, {
+        navTimeoutMs: 20_000,
+        settleMs: 3_000,
+        onlyMatchingProductCode: false,
+      }),
+      25_000,
+      url
+    );
+  } catch (err) {
+    console.error(`[debug] navigation/render error (continuing to dump what we have): ${err.message}`);
   }
 
+  const html = await page.content().catch(() => '<failed to read page content>');
+  await writeFile(path.join(outDir, 'page.html'), html, 'utf-8');
+  await page.screenshot({ path: path.join(outDir, 'screenshot.png'), fullPage: true }).catch((err) => {
+    console.error(`[debug] screenshot failed: ${err.message}`);
+  });
+  await writeFile(
+    path.join(outDir, 'responses.json'),
+    JSON.stringify(candidateJsonResponses, null, 2),
+    'utf-8'
+  );
+
+  const matchingCount = productCode
+    ? candidateJsonResponses.filter((r) => r.url.includes(productCode)).length
+    : 0;
+  console.log(
+    `[debug] wrote page.html, screenshot.png, responses.json to ${outDir} ` +
+      `(${candidateJsonResponses.length} JSON response(s) captured, ${matchingCount} with the product code "${productCode}" in their URL)`
+  );
+
+  await context.close().catch(() => {});
+}
+
+async function main() {
   const browser = await chromium.launch();
-  const totals = { discovered: 0, changed: 0, unchanged: 0, failed: 0 };
 
   try {
+    if (DEBUG_URL) {
+      await debugSingleProduct(browser, DEBUG_URL);
+      return;
+    }
+
+    const raw = await readFile(new URL('../config/sources.json', import.meta.url), 'utf-8');
+    const sources = JSON.parse(raw);
+
+    if (sources.length === 0) {
+      console.log('No sources configured in config/sources.json — nothing to scrape.');
+      return;
+    }
+
+    const totals = { discovered: 0, changed: 0, unchanged: 0, failed: 0 };
+
     for (const source of sources) {
       const result = await processSource(browser, source);
       totals.discovered += result.discovered;
@@ -323,15 +408,15 @@ async function main() {
       totals.unchanged += result.unchanged;
       totals.failed += result.failed;
     }
+
+    console.log(
+      `Done. ${totals.discovered} discovered, ${totals.changed} changed, ${totals.unchanged} unchanged, ${totals.failed} failed.`
+    );
+    if (totals.discovered > 0 && totals.failed === totals.discovered) {
+      process.exitCode = 1;
+    }
   } finally {
     await browser.close();
-  }
-
-  console.log(
-    `Done. ${totals.discovered} discovered, ${totals.changed} changed, ${totals.unchanged} unchanged, ${totals.failed} failed.`
-  );
-  if (totals.discovered > 0 && totals.failed === totals.discovered) {
-    process.exitCode = 1;
   }
 }
 
