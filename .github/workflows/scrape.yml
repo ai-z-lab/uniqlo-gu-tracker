@@ -22,6 +22,10 @@ jobs:
         working-directory: scripts
         run: npm ci
 
+      - name: Install Playwright browser
+        working-directory: scripts
+        run: npx playwright install --with-deps chromium
+
       - name: Run scraper
         working-directory: scripts
         env:
