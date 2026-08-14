@@ -4,11 +4,17 @@ on:
   schedule:
     # 21:00 UTC = 06:00 JST
     - cron: "0 21 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      debug_url:
+        description: "(Optional) Product page URL to debug instead of a normal run. Renders just this one page and uploads page.html / screenshot.png / responses.json as an artifact."
+        required: false
+        type: string
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -31,4 +37,14 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DEBUG_URL: ${{ inputs.debug_url }}
         run: npm run scrape
+
+      - name: Upload debug artifact
+        if: always() && inputs.debug_url != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-output
+          path: debug-output/
+          if-no-files-found: warn
+          retention-days: 7
