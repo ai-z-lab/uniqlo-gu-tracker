@@ -37,7 +37,13 @@ docs/                         公開する静的サイト(ブランド/性別/�
 - ダッシュボードは UNIQLO/GU タブ → MEN/WOMEN タブ → 新作/値下げ/期間限定/
   値上げのセクション → カテゴリ、の階層で商品を表示します。この分類には
   `price_events` の `gender` / `event_type` / `category` 列を使います
-  (詳細は下記「分類ロジックについて」を参照)。
+  (詳細は下記「分類ロジックについて」を参照)。商品カードはカード全体が
+  リンクになっており、クリック/タップすると `url` 列の商品ページを新しい
+  タブで開きます。
+- 期間限定価格の商品には、可能な場合「◯月◯日まで」を表示します。取得元は
+  商品ページの schema.org JSON-LD にある `Offer.priceValidUntil`(price_events
+  の `limited_price_end_date` 列)で、見つからない場合はページ内の
+  「◯月◯日まで」というテキストからの推測にフォールバックします。
 
 ## セットアップ(このリポジトリのコードだけでは完結しない、手動で必要な3ステップ)
 
@@ -55,6 +61,8 @@ Supabase ダッシュボード → 該当プロジェクト → **SQL Editor** �
 2. [`supabase/migrations/0002_add_category_gender_event_type.sql`](./supabase/migrations/0002_add_category_gender_event_type.sql)
    — `category` / `gender` / `event_type` 列を追加(ダッシュボードの
    タブ・セクション分けに必要)
+3. [`supabase/migrations/0003_add_limited_price_end_date.sql`](./supabase/migrations/0003_add_limited_price_end_date.sql)
+   — 期間限定価格の終了日を保存する `limited_price_end_date` 列を追加
 
 ### 2. スクレイパー用の Secrets を GitHub リポジトリに追加する
 
@@ -149,3 +157,11 @@ Actions タブから `Scrape prices` を手動実行 (workflow_dispatch) する�
 `category`/`gender`/`event_type` が入っていません。次回以降のスクレイプで
 上書きされる(同じ product_id で新しい行が追加される)まで、そうした古い
 商品はダッシュボードのどのタブにも表示されません。
+
+### 同日の重複行について
+
+同じ商品・同じ日に何度スクレイパーを実行しても(手動での動作確認など)、
+`price_events` には1商品につき1日1行しか残りません。同じ日(UTC基準)に
+既存の行があれば新規追加(INSERT)ではなく上書き(UPDATE)します。動作確
+認のために何度手動実行しても、価格推移グラフに不自然な点が増えることはあ
+りません。

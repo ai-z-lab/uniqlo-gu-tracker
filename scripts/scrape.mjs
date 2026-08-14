@@ -229,6 +229,17 @@ function parseJsonLdProducts(html, log = () => {}) {
   return products;
 }
 
+// schema.org's Offer.priceValidUntil is exactly "the date after which the
+// price is no longer available" — precisely what a UNIQLO/GU "期間限定価格"
+// end date is. Returned as a plain YYYY-MM-DD string (postgres `date`
+// column), or null if absent/unparseable.
+function parsePriceValidUntil(value) {
+  if (!value || typeof value !== 'string') return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().slice(0, 10);
+}
+
 function extractPriceFromOffers(offersLike, log = () => {}, source = 'offers') {
   if (!offersLike) {
     log(`    ${source}: absent`);
@@ -239,12 +250,52 @@ function extractPriceFromOffers(offersLike, log = () => {}, source = 'offers') {
     if (!offer) continue;
     const price = offer.price ?? offer.lowPrice;
     if (price != null && !Number.isNaN(Number(price))) {
-      log(`    ${source}[${i}]: price=${JSON.stringify(price)} (type ${typeof price}) -> using it`);
-      return { price: Number(price), currency: offer.priceCurrency || 'JPY' };
+      const priceValidUntil = parsePriceValidUntil(offer.priceValidUntil);
+      log(
+        `    ${source}[${i}]: price=${JSON.stringify(price)} (type ${typeof price}), ` +
+          `priceValidUntil=${JSON.stringify(offer.priceValidUntil ?? null)} -> using price` +
+          (priceValidUntil ? ` (end date ${priceValidUntil})` : '')
+      );
+      return { price: Number(price), currency: offer.priceCurrency || 'JPY', limitedPriceEndDate: priceValidUntil };
     }
     log(`    ${source}[${i}]: no usable price field (keys: ${Object.keys(offer).join(', ')})`);
   }
   return null;
+}
+
+// Fallback when JSON-LD has no priceValidUntil at all: look for a Japanese
+// "◯月◯日まで" phrase anywhere in the rendered page. Approximate on purpose
+// (no year is usually given on-page) — assumes the *next* upcoming
+// occurrence of that month/day from today, which is the only sane reading
+// of a listing that says e.g. "5月20日まで" without a year.
+function extractLimitedPriceEndDateFromText(html, log = () => {}) {
+  const match = html.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日[^\d<]{0,6}まで/);
+  if (!match) {
+    log('  no "◯月◯日まで" text pattern found either');
+    return null;
+  }
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  const now = new Date();
+  let year = now.getUTCFullYear();
+  const candidate = new Date(Date.UTC(year, month - 1, day));
+  // If that month/day already passed (with a day of slack), it must mean
+  // next year's occurrence.
+  if (candidate.getTime() < now.getTime() - 24 * 60 * 60 * 1000) year += 1;
+
+  const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  log(`  fallback text pattern matched "${match[0].trim()}" -> ${iso}`);
+  return iso;
+}
+
+// Applies the "◯月◯日まで" text fallback whenever JSON-LD didn't already
+// give us an end date, regardless of which strategy found the price itself.
+function withLimitedPriceEndDateFallback(result, html, log) {
+  if (!result) return result;
+  if (result.limitedPriceEndDate) return result;
+  return { ...result, limitedPriceEndDate: extractLimitedPriceEndDateFromText(html, log) };
 }
 
 function extractPriceFromRenderedHtml(html, log = () => {}) {
@@ -254,13 +305,13 @@ function extractPriceFromRenderedHtml(html, log = () => {}) {
   for (const [i, product] of products.entries()) {
     log(`  candidate #${i} (@type=${JSON.stringify(product['@type'])}):`);
     const direct = extractPriceFromOffers(product.offers, log, `candidate #${i} .offers`);
-    if (direct) return direct;
+    if (direct) return withLimitedPriceEndDateFallback(direct, html, log);
 
     if (Array.isArray(product.hasVariant)) {
       log(`  candidate #${i}: checking ${product.hasVariant.length} hasVariant entries`);
       for (const [v, variant] of product.hasVariant.entries()) {
         const variantPrice = extractPriceFromOffers(variant?.offers, log, `candidate #${i} .hasVariant[${v}].offers`);
-        if (variantPrice) return variantPrice;
+        if (variantPrice) return withLimitedPriceEndDateFallback(variantPrice, html, log);
       }
     } else {
       log(`  candidate #${i}: no hasVariant array`);
@@ -273,7 +324,11 @@ function extractPriceFromRenderedHtml(html, log = () => {}) {
   if (metaPrice) {
     log(`falling back to product:price:amount meta tag: ${metaPrice[1]}`);
     const currencyMatch = html.match(/<meta[^>]+property=["']product:price:currency["'][^>]+content=["']([A-Z]{3})["']/i);
-    return { price: Number(metaPrice[1]), currency: currencyMatch ? currencyMatch[1] : 'JPY' };
+    return withLimitedPriceEndDateFallback(
+      { price: Number(metaPrice[1]), currency: currencyMatch ? currencyMatch[1] : 'JPY' },
+      html,
+      log
+    );
   }
   log('no product:price:amount meta tag found');
 
@@ -285,7 +340,7 @@ function extractPriceFromRenderedHtml(html, log = () => {}) {
       const price = findPriceInObject(data);
       if (price != null) {
         log(`__NEXT_DATA__: found price=${price}`);
-        return { price, currency: 'JPY' };
+        return withLimitedPriceEndDateFallback({ price, currency: 'JPY' }, html, log);
       }
       log('__NEXT_DATA__: parsed OK but no plausible price field found');
     } catch (err) {
@@ -392,8 +447,11 @@ async function renderAndExtract(browser, url, { log = () => {}, renderOptions = 
     }
 
     const name = extractNameFromRenderedHtml(renderedHtml);
-    log(`extraction SUCCEEDED: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}`);
-    return { price: result.price, currency: result.currency, name };
+    log(
+      `extraction SUCCEEDED: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}, ` +
+        `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate ?? null)}`
+    );
+    return { price: result.price, currency: result.currency, name, limitedPriceEndDate: result.limitedPriceEndDate ?? null };
   } finally {
     await closeContextSafely(context, log);
   }
@@ -404,12 +462,21 @@ async function renderAndExtract(browser, url, { log = () => {}, renderOptions = 
 async function fetchLatestRecordedPrice(productId) {
   const { data, error } = await supabase
     .from('price_events')
-    .select('price, currency')
+    .select('id, price, currency, scraped_at')
     .eq('product_id', productId)
     .order('scraped_at', { ascending: false })
     .limit(1);
   if (error) throw error;
   return data?.[0] ?? null;
+}
+
+// Same UTC calendar day, i.e. was the last row for this product recorded on
+// today's date already? Used to collapse re-runs (manual re-triggers,
+// testing, etc.) onto a single row per product per day instead of piling up
+// multiple same-day points that make the price-history chart look jagged
+// for no real reason.
+function isSameUtcCalendarDay(isoA, isoB) {
+  return isoA.slice(0, 10) === isoB.slice(0, 10);
 }
 
 // Records one observation per product on *every* scrape (not only when the
@@ -418,7 +485,10 @@ async function fetchLatestRecordedPrice(productId) {
 // is still discounted-but-unchanged must keep producing a fresh 'markdown'/
 // 'limited' row, or it would silently vanish from the dashboard after its
 // first price drop. Price history for the sparkline chart is a side benefit
-// of the same rows.
+// of the same rows. If a row for this product already exists from *today*,
+// it is updated in place rather than inserted again (see
+// isSameUtcCalendarDay) so repeated runs on the same day don't create
+// multiple points on the same day.
 async function processProductUrl(browser, url, source) {
   const extracted = await renderAndExtract(browser, url);
   if (!extracted) {
@@ -435,7 +505,8 @@ async function processProductUrl(browser, url, source) {
     listingType: source.listingType,
   });
 
-  const { error: insertError } = await supabase.from('price_events').insert({
+  const nowIso = new Date().toISOString();
+  const row = {
     product_id: productId,
     product_name: extracted.name,
     brand: source.brand,
@@ -445,8 +516,17 @@ async function processProductUrl(browser, url, source) {
     url,
     price: extracted.price,
     currency: extracted.currency,
-  });
-  if (insertError) throw insertError;
+    limited_price_end_date: extracted.limitedPriceEndDate ?? null,
+    scraped_at: nowIso,
+  };
+
+  if (latest && isSameUtcCalendarDay(latest.scraped_at, nowIso)) {
+    const { error: updateError } = await supabase.from('price_events').update(row).eq('id', latest.id);
+    if (updateError) throw updateError;
+  } else {
+    const { error: insertError } = await supabase.from('price_events').insert(row);
+    if (insertError) throw insertError;
+  }
 
   const priceChanged = !latest || latest.price !== extracted.price || latest.currency !== extracted.currency;
   return { productId, eventType, priceChanged, price: extracted.price, currency: extracted.currency };
@@ -587,7 +667,10 @@ async function debugSingleProduct(browser, url) {
 
   if (result) {
     const name = extractNameFromRenderedHtml(html);
-    trace(`RESULT: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}`);
+    trace(
+      `RESULT: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}, ` +
+        `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate ?? null)}`
+    );
   } else {
     trace('RESULT: no price found via any strategy');
   }

@@ -42,6 +42,17 @@ const dateFormatter = new Intl.DateTimeFormat("ja-JP", {
   minute: "2-digit",
 });
 
+// limited_price_end_date is a plain YYYY-MM-DD (no time component) — format
+// it in UTC explicitly so the displayed day never shifts by one due to the
+// viewer's local timezone.
+const endDateFormatter = new Intl.DateTimeFormat("ja-JP", { month: "long", day: "numeric", timeZone: "UTC" });
+function formatLimitedPriceEndDate(isoDate) {
+  if (!isoDate) return null;
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return null;
+  return `${endDateFormatter.format(date)}まで`;
+}
+
 function buildIndex(rows) {
   const byProduct = new Map();
   for (const row of rows) {
@@ -79,20 +90,19 @@ function renderCard(product) {
   const previous = history.length > 1 ? history[history.length - 2] : null;
   const fmt = currencyFormatter(latest.currency);
 
-  const card = document.createElement("div");
+  // The whole card is the product link (click/tap anywhere opens the
+  // official product page in a new tab), so it's an <a>, not a <div>.
+  const card = document.createElement("a");
   card.className = "card";
+  card.href = latest.url;
+  card.target = "_blank";
+  card.rel = "noopener noreferrer";
 
   const topRow = document.createElement("div");
   topRow.className = "top-row";
 
   const title = document.createElement("h2");
-  const link = document.createElement("a");
-  link.className = "product-link";
-  link.href = latest.url;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  link.textContent = latest.product_name || latest.product_id;
-  title.appendChild(link);
+  title.textContent = latest.product_name || latest.product_id;
   topRow.appendChild(title);
 
   const eventConfig = EVENT_TYPE_CONFIG.find((e) => e.key === latest.event_type);
@@ -121,6 +131,14 @@ function renderCard(product) {
     priceRow.appendChild(delta);
   }
   card.appendChild(priceRow);
+
+  const endDateText = formatLimitedPriceEndDate(latest.limited_price_end_date);
+  if (endDateText) {
+    const endDate = document.createElement("div");
+    endDate.className = "end-date";
+    endDate.textContent = endDateText;
+    card.appendChild(endDate);
+  }
 
   const updated = document.createElement("div");
   updated.className = "updated";
@@ -264,7 +282,9 @@ genderTabsEl.addEventListener("click", (e) => {
 async function main() {
   const { data, error } = await supabase
     .from("price_events")
-    .select("product_id, product_name, brand, gender, category, event_type, url, price, currency, scraped_at")
+    .select(
+      "product_id, product_name, brand, gender, category, event_type, url, price, currency, scraped_at, limited_price_end_date"
+    )
     .order("scraped_at", { ascending: true });
 
   if (error) {
