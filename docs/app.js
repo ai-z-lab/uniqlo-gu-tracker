@@ -13,12 +13,16 @@ const BRAND_CONFIG = {
   gu: { label: "GU", color: "var(--brand-gu)" },
 };
 
-// Section order top-to-bottom, each independent per the dashboard spec:
-// new arrivals and price increases get their own sections, separate from
-// the markdown/limited-time-price sections.
+// Section order top-to-bottom, each independent per the dashboard spec.
+// "初値下げ"/"初期間限定" (first_markdown/first_limited) are this tracker's
+// first-ever detection of a product via the 値下げ一覧/期間限定価格一覧 listing
+// pages respectively — NOT a claim that the product just launched, since this
+// tracker never visits an official new-arrivals page. They're grouped next to
+// their parent 値下げ/期間限定 sections rather than at the top for that reason.
 const EVENT_TYPE_CONFIG = [
-  { key: "new", label: "新作" },
+  { key: "first_markdown", label: "初値下げ" },
   { key: "markdown", label: "値下げ" },
+  { key: "first_limited", label: "初期間限定" },
   { key: "limited", label: "期間限定" },
   { key: "price_up", label: "値上げ" },
 ];

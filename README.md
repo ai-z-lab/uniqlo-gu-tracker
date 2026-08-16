@@ -4,7 +4,7 @@ UNIQLO / GU の「セール一覧」「期間限定価格一覧」などのカ�
 毎日自動巡回し、掲載されている商品を自動的に発見して価格をチェック、変わって
 いたら Supabase の `price_events` テーブルに記録、GitHub Pages 上の静的サイト
 でグラフ表示する価格トラッカーです。個々の商品URLを事前登録する必要はなく、
-一覧ページに載っている商品を都度拾い直すので、値下げ・新作・期間限定の対象
+一覧ページに載っている商品を都度拾い直すので、値下げ・期間限定価格の対象
 商品を網羅的に追跡できます。
 
 ## 構成
@@ -34,8 +34,8 @@ docs/                         公開する静的サイト(ブランド/性別/�
 - 価格の書き込みは GitHub Actions 上のスクレイパーが **service_role key**
   (RLSをバイパスする秘匿キー)を使って行います。このキーはリポジトリに
   コミットせず、GitHub Secrets にのみ保存します。
-- ダッシュボードは UNIQLO/GU タブ → MEN/WOMEN タブ → 新作/値下げ/期間限定/
-  値上げのセクション → カテゴリ、の階層で商品を表示します。この分類には
+- ダッシュボードは UNIQLO/GU タブ → MEN/WOMEN タブ → 初値下げ/値下げ/
+  初期間限定/期間限定/値上げのセクション → カテゴリ、の階層で商品を表示します。この分類には
   `price_events` の `gender` / `event_type` / `category` 列を使います
   (詳細は下記「分類ロジックについて」を参照)。商品カードはカード全体が
   リンクになっており、クリック/タップすると `url` 列の商品ページを新しい
@@ -63,6 +63,9 @@ Supabase ダッシュボード → 該当プロジェクト → **SQL Editor** �
    タブ・セクション分けに必要)
 3. [`supabase/migrations/0003_add_limited_price_end_date.sql`](./supabase/migrations/0003_add_limited_price_end_date.sql)
    — 期間限定価格の終了日を保存する `limited_price_end_date` 列を追加
+4. [`supabase/migrations/0004_replace_new_with_first_seen_labels.sql`](./supabase/migrations/0004_replace_new_with_first_seen_labels.sql)
+   — `event_type` の `'new'`(新作)を `'first_markdown'`(初値下げ)/
+   `'first_limited'`(初期間限定)に置き換え
 
 ### 2. スクレイパー用の Secrets を GitHub リポジトリに追加する
 
@@ -141,10 +144,19 @@ Actions タブから `Scrape prices` を手動実行 (workflow_dispatch) する�
 `event_type` は `scripts/scrape.mjs` の `classifyEventType()` が以下の優先
 順位で決めます:
 
-1. その商品を過去に一度も記録したことがない → `new`(新作)
+1. その商品を過去に一度も記録したことがない → 発見元の `source.listingType`
+   に応じて `first_markdown`(初値下げ)または `first_limited`(初期間限定)
 2. 前回記録した価格より値上がりしている → `price_up`(値上げ)
 3. それ以外 → 発見元の `source.listingType` に応じて `markdown`(値下げ)
    または `limited`(期間限定)
+
+このトラッカーが巡回しているのは UNIQLO/GU の「値下げ一覧」「期間限定価格
+一覧」だけで、公式の新作一覧ページは巡回対象に含まれていません。そのため
+`first_markdown`/`first_limited` は「このトラッカーがその商品を初めて検出
+した」という意味であり、「本当にその日発売された新商品」であることを保証
+するものではありません。この理由から独立した「新作」セクションは設けず、
+値下げ/期間限定それぞれの「初めて検出した」バリエーションとして扱ってい
+ます。
 
 「過去に記録したことがあるか」は Supabase 上の既存データで判定するため、
 **同じ商品を同じ実行内で2回処理してしまうと、1回目の記録直後に2回目が
