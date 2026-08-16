@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>UNIQLO / GU 価格トラッカー</title>
-  <meta name="description" content="UNIQLO・GUの値下げ・期間限定価格・新作・値上げをブランド/性別/カテゴリ別に一覧できる価格トラッカーです。" />
+  <meta name="description" content="UNIQLO・GUの値下げ・期間限定価格・初値下げ・初期間限定・値上げをブランド/性別/カテゴリ別に一覧できる価格トラッカーです。" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏷️</text></svg>" />
   <style>
     :root {
@@ -28,10 +28,16 @@
       /* Status colors (event_type) — intentionally NOT reused as brand
          colors; kept distinguishable from brand color by being applied as a
          filled pill *label* near the top of a card, never as the card's
-         left stripe (that's always the brand color). */
+         left stripe (that's always the brand color). first_markdown/
+         first_limited use a hue close to their parent markdown/limited color
+         (rather than an unrelated color like the old "new" green) so the
+         "this is a first-time-seen variant of 値下げ/期間限定, not a genuinely
+         new arrival" relationship reads visually, while staying distinct
+         enough not to be confused with the parent badge itself. */
       --status-markdown: #c8342a;
+      --status-first_markdown: #d6336c;
       --status-limited: #c96a12;
-      --status-new: #1f8a4c;
+      --status-first_limited: #a8790a;
       --status-price_up: #7c3aed;
 
       --tab-bg: #ececef;
@@ -54,8 +60,9 @@
         --brand-gu-soft: #1c2b3f;
 
         --status-markdown: #ff6f63;
+        --status-first_markdown: #ff8fb3;
         --status-limited: #f5a24d;
-        --status-new: #4fd07a;
+        --status-first_limited: #e0b84d;
         --status-price_up: #b794f6;
 
         --tab-bg: #232427;
@@ -332,7 +339,7 @@
 <body>
   <header>
     <h1>UNIQLO / GU 価格トラッカー</h1>
-    <p>ブランド・性別・値下げ/期間限定/新作/値上げ・カテゴリ別に商品を一覧できます。</p>
+    <p>ブランド・性別・値下げ/期間限定/初値下げ/初期間限定/値上げ・カテゴリ別に商品を一覧できます。</p>
   </header>
   <main>
     <div class="tabs brand-tabs" id="brand-tabs">

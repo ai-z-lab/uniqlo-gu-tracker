@@ -90,11 +90,17 @@ function categorizeProduct(brand, name) {
   return fallback;
 }
 
-// event_type priority: a genuinely new product, or one whose price just went
-// up, is more notable than the default "why is this on the dashboard at
-// all" bucket implied by which listing page it came from.
+// event_type priority: a product this tracker has never seen before, or one
+// whose price just went up, is more notable than the default "why is this on
+// the dashboard at all" bucket implied by which listing page it came from.
+//
+// This tracker only crawls the 値下げ一覧/期間限定価格一覧 listing pages, never
+// an official new-arrivals page, so "never seen before" does NOT mean
+// "genuinely just released" — it only means "first time this tracker
+// happened to detect it". 'first_markdown'/'first_limited' name that
+// honestly, split by which listing page it was first found on.
 function classifyEventType({ isNewProduct, previousPrice, currentPrice, listingType }) {
-  if (isNewProduct) return 'new';
+  if (isNewProduct) return listingType === 'limited' ? 'first_limited' : 'first_markdown';
   if (previousPrice != null && currentPrice > previousPrice) return 'price_up';
   return listingType === 'limited' ? 'limited' : 'markdown';
 }
@@ -566,7 +572,7 @@ async function processSource(browser, source, processedProductIds) {
   let priceChanged = 0;
   let failed = 0;
   let skipped = 0;
-  const byEventType = { new: 0, markdown: 0, limited: 0, price_up: 0 };
+  const byEventType = { first_markdown: 0, first_limited: 0, markdown: 0, limited: 0, price_up: 0 };
 
   for (const url of targets) {
     try {
@@ -592,7 +598,8 @@ async function processSource(browser, source, processedProductIds) {
 
   console.log(
     `[${source.id}] recorded ${recorded}/${productUrls.length} ` +
-      `(new=${byEventType.new}, markdown=${byEventType.markdown}, limited=${byEventType.limited}, price_up=${byEventType.price_up}), ` +
+      `(first_markdown=${byEventType.first_markdown}, first_limited=${byEventType.first_limited}, ` +
+      `markdown=${byEventType.markdown}, limited=${byEventType.limited}, price_up=${byEventType.price_up}), ` +
       `${priceChanged} price change(s), ${skipped} skipped (already processed this run), ${failed} failed`
   );
 
