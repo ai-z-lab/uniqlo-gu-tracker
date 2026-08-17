@@ -57,6 +57,34 @@ function formatLimitedPriceEndDate(isoDate) {
   return `${endDateFormatter.format(date)}まで`;
 }
 
+// A distinct "値下げ段階": every time this product's price actually changed
+// while recorded via a markdown-listing row ('first_markdown'/'markdown').
+// The scraper writes a fresh row every scrape even when the discounted price
+// hasn't moved (see scripts/scrape.mjs), so same-price rows collapse into a
+// single point here — "3段階目" means "the 3rd distinct price this product
+// has had while markdown-listed", not "3 rows in the DB". Non-markdown rows
+// (期間限定/値上げ observations that happened in between) are skipped rather
+// than breaking the sequence, since they don't represent a 値下げ step.
+function markdownStagePoints(history) {
+  const points = [];
+  for (const row of history) {
+    if (row.event_type !== "first_markdown" && row.event_type !== "markdown") continue;
+    const last = points[points.length - 1];
+    if (!last || last.price !== row.price) {
+      points.push({ price: row.price, currency: row.currency, scraped_at: row.scraped_at });
+    }
+  }
+  return points;
+}
+
+const stageDateFormatter = new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric" });
+
+// e.g. "¥1,990(7/8)→¥1,290(7/13)→¥990(7/28)→¥790(8/18)"
+function formatMarkdownStageHistory(points) {
+  const fmt = currencyFormatter(points[0]?.currency ?? "JPY");
+  return points.map((p) => `${fmt.format(p.price)}(${stageDateFormatter.format(new Date(p.scraped_at))})`).join(" → ");
+}
+
 function buildIndex(rows) {
   const byProduct = new Map();
   for (const row of rows) {
@@ -109,12 +137,22 @@ function renderCard(product) {
   title.textContent = latest.product_name || latest.product_id;
   topRow.appendChild(title);
 
+  const isMarkdownFamily = latest.event_type === "first_markdown" || latest.event_type === "markdown";
+  const stagePoints = isMarkdownFamily ? markdownStagePoints(history) : [];
+
   const eventConfig = EVENT_TYPE_CONFIG.find((e) => e.key === latest.event_type);
   if (eventConfig) {
     const badge = document.createElement("span");
     badge.className = "status-badge";
     badge.style.setProperty("--status-color", `var(--status-${eventConfig.key})`);
-    badge.textContent = eventConfig.label;
+    // "初値下げ" is always exactly stage 1 by definition (see classifyEventType
+    // in scripts/scrape.mjs), so the stage count only adds information for a
+    // *follow-up* markdown — append it there instead of duplicating "(1段階目)"
+    // on every 初値下げ badge.
+    badge.textContent =
+      latest.event_type === "markdown" && stagePoints.length > 0
+        ? `${eventConfig.label}(${stagePoints.length}段階目)`
+        : eventConfig.label;
     topRow.appendChild(badge);
   }
   card.appendChild(topRow);
@@ -149,7 +187,16 @@ function renderCard(product) {
   updated.textContent = `最終確認: ${dateFormatter.format(new Date(latest.scraped_at))}`;
   card.appendChild(updated);
 
-  if (history.length > 1) {
+  if (isMarkdownFamily && stagePoints.length > 0) {
+    // Replaces the sparkline chart for markdown-family cards: the arrow text
+    // already conveys the same price-over-time information, with the actual
+    // values/dates attached instead of an unlabeled line, so showing both
+    // would be redundant.
+    const stageHistory = document.createElement("div");
+    stageHistory.className = "stage-history";
+    stageHistory.textContent = formatMarkdownStageHistory(stagePoints);
+    card.appendChild(stageHistory);
+  } else if (history.length > 1) {
     // Chart.js loads from a CDN (see index.html); if that fails for any
     // reason (offline, ad blocker, CDN hiccup) the card should still show
     // its price/name instead of taking the whole dashboard render down with
@@ -186,6 +233,28 @@ function renderCard(product) {
   }
 
   return card;
+}
+
+function appendProductGroup(section, labelText, products) {
+  const group = document.createElement("div");
+  group.className = "category-group";
+
+  const h3 = document.createElement("h3");
+  h3.textContent = `${labelText}(${products.length})`;
+  group.appendChild(h3);
+
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  for (const product of products) {
+    try {
+      grid.appendChild(renderCard(product));
+    } catch (err) {
+      console.error(`failed to render card for ${product.latest.product_id}`, err);
+    }
+  }
+  group.appendChild(grid);
+
+  section.appendChild(group);
 }
 
 function renderContent() {
@@ -227,29 +296,29 @@ function renderContent() {
     header.appendChild(count);
     section.appendChild(header);
 
-    for (const category of categoryOrderFor(state.brand, categories)) {
-      const products = byCategory[category];
-      if (!products || products.length === 0) continue;
-
-      const group = document.createElement("div");
-      group.className = "category-group";
-
-      const h3 = document.createElement("h3");
-      h3.textContent = `${category}(${products.length})`;
-      group.appendChild(h3);
-
-      const grid = document.createElement("div");
-      grid.className = "grid";
-      for (const product of products) {
-        try {
-          grid.appendChild(renderCard(product));
-        } catch (err) {
-          console.error(`failed to render card for ${product.latest.product_id}`, err);
+    if (eventConfig.key === "markdown") {
+      // Grouped by 値下げ段階 instead of category here — how many times a
+      // product has been discounted is the more useful axis to browse this
+      // particular section by (category grouping is still used everywhere
+      // else). 初値下げ is always exactly stage 1, so grouping it the same
+      // way wouldn't add anything.
+      const byStage = new Map();
+      for (const category of categories) {
+        for (const product of byCategory[category]) {
+          const stage = markdownStagePoints(product.history).length;
+          if (!byStage.has(stage)) byStage.set(stage, []);
+          byStage.get(stage).push(product);
         }
       }
-      group.appendChild(grid);
-
-      section.appendChild(group);
+      for (const stage of [...byStage.keys()].sort((a, b) => a - b)) {
+        appendProductGroup(section, `${stage}段階目`, byStage.get(stage));
+      }
+    } else {
+      for (const category of categoryOrderFor(state.brand, categories)) {
+        const products = byCategory[category];
+        if (!products || products.length === 0) continue;
+        appendProductGroup(section, category, products);
+      }
     }
 
     contentEl.appendChild(section);
