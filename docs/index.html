@@ -186,6 +186,28 @@
       font-size: 0.85rem;
     }
 
+    /* "直近で値下げ/期間限定入りが確認された日" strip at the top of the 値下げ/
+       期間限定 sections — a lightweight, non-interactive summary, not a filter
+       control. */
+    .date-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-bottom: 1.1rem;
+    }
+
+    .date-chip {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--status-color);
+      border: 1px solid var(--status-color);
+      border-radius: 999px;
+      padding: 0.15rem 0.6rem;
+      white-space: nowrap;
+    }
+
     .category-group {
       margin-bottom: 1.4rem;
     }
@@ -305,6 +327,12 @@
       color: var(--status-limited);
       font-size: 0.75rem;
       font-weight: 700;
+      margin-bottom: 0.3rem;
+    }
+
+    .limited-since {
+      color: var(--text-muted);
+      font-size: 0.75rem;
       margin-bottom: 0.3rem;
     }
 

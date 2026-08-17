@@ -85,6 +85,43 @@ function formatMarkdownStageHistory(points) {
   return points.map((p) => `${fmt.format(p.price)}(${stageDateFormatter.format(new Date(p.scraped_at))})`).join(" → ");
 }
 
+// The date this product was first ever recorded as 期間限定 (event_type
+// 'first_limited'/'limited') — history is sorted ascending, so the first
+// matching row is the earliest. Unlike markdown, 期間限定 doesn't get a
+// multi-stage breakdown here (a period-limited price is a single ongoing
+// offer, not a sequence of discrete markdowns), just this one "since" date.
+function firstLimitedSeenDate(history) {
+  for (const row of history) {
+    if (row.event_type === "first_limited" || row.event_type === "limited") return row.scraped_at;
+  }
+  return null;
+}
+
+// Buckets `products` by the local calendar day `dateOf(product)` falls on,
+// most-recent-day first, capped to the most recent 14 distinct days so a
+// long-tracked section doesn't produce an unbounded row of chips.
+function groupProductsByDate(products, dateOf) {
+  const groups = new Map(); // "M/D" label -> { date: Date, count: number }
+  for (const product of products) {
+    const iso = dateOf(product);
+    if (!iso) continue;
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) continue;
+    const label = stageDateFormatter.format(date);
+    const existing = groups.get(label);
+    if (existing) {
+      existing.count += 1;
+      if (date > existing.date) existing.date = date;
+    } else {
+      groups.set(label, { date, count: 1 });
+    }
+  }
+  return [...groups.values()]
+    .sort((a, b) => b.date - a.date)
+    .slice(0, 14)
+    .map((g) => ({ label: stageDateFormatter.format(g.date), count: g.count }));
+}
+
 function buildIndex(rows) {
   const byProduct = new Map();
   for (const row of rows) {
@@ -138,6 +175,7 @@ function renderCard(product) {
   topRow.appendChild(title);
 
   const isMarkdownFamily = latest.event_type === "first_markdown" || latest.event_type === "markdown";
+  const isLimitedFamily = latest.event_type === "first_limited" || latest.event_type === "limited";
   const stagePoints = isMarkdownFamily ? markdownStagePoints(history) : [];
 
   const eventConfig = EVENT_TYPE_CONFIG.find((e) => e.key === latest.event_type);
@@ -180,6 +218,16 @@ function renderCard(product) {
     endDate.className = "end-date";
     endDate.textContent = endDateText;
     card.appendChild(endDate);
+  }
+
+  if (isLimitedFamily) {
+    const sinceIso = firstLimitedSeenDate(history);
+    if (sinceIso) {
+      const since = document.createElement("div");
+      since.className = "limited-since";
+      since.textContent = `期間限定価格を確認: ${stageDateFormatter.format(new Date(sinceIso))}〜`;
+      card.appendChild(since);
+    }
   }
 
   const updated = document.createElement("div");
@@ -233,6 +281,19 @@ function renderCard(product) {
   }
 
   return card;
+}
+
+function appendDateSummary(section, entries) {
+  if (entries.length === 0) return;
+  const summary = document.createElement("div");
+  summary.className = "date-summary";
+  for (const { label, count } of entries) {
+    const chip = document.createElement("span");
+    chip.className = "date-chip";
+    chip.textContent = `${label}(${count})`;
+    summary.appendChild(chip);
+  }
+  section.appendChild(summary);
 }
 
 function appendProductGroup(section, labelText, products) {
@@ -297,23 +358,44 @@ function renderContent() {
     section.appendChild(header);
 
     if (eventConfig.key === "markdown") {
+      const allProducts = categories.flatMap((c) => byCategory[c]);
+      // "直近で値下げが確認された日" — each product's own most recent 値下げ段階
+      // (i.e. when its *current* price was first observed), grouped by day.
+      appendDateSummary(
+        section,
+        groupProductsByDate(allProducts, (p) => {
+          const points = markdownStagePoints(p.history);
+          return points.length ? points[points.length - 1].scraped_at : null;
+        })
+      );
+
       // Grouped by 値下げ段階 instead of category here — how many times a
       // product has been discounted is the more useful axis to browse this
       // particular section by (category grouping is still used everywhere
       // else). 初値下げ is always exactly stage 1, so grouping it the same
       // way wouldn't add anything.
       const byStage = new Map();
-      for (const category of categories) {
-        for (const product of byCategory[category]) {
-          const stage = markdownStagePoints(product.history).length;
-          if (!byStage.has(stage)) byStage.set(stage, []);
-          byStage.get(stage).push(product);
-        }
+      for (const product of allProducts) {
+        const stage = markdownStagePoints(product.history).length;
+        if (!byStage.has(stage)) byStage.set(stage, []);
+        byStage.get(stage).push(product);
       }
       for (const stage of [...byStage.keys()].sort((a, b) => a - b)) {
         appendProductGroup(section, `${stage}段階目`, byStage.get(stage));
       }
     } else {
+      if (eventConfig.key === "limited") {
+        // "直近で期間限定入りが確認された日" — each product's first-ever 期間限定
+        // observation, grouped by day.
+        appendDateSummary(
+          section,
+          groupProductsByDate(
+            categories.flatMap((c) => byCategory[c]),
+            (p) => firstLimitedSeenDate(p.history)
+          )
+        );
+      }
+
       for (const category of categoryOrderFor(state.brand, categories)) {
         const products = byCategory[category];
         if (!products || products.length === 0) continue;
