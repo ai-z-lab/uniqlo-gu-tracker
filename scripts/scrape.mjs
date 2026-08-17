@@ -64,18 +64,25 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // extraction). Ordered lists, first matching keyword wins; unmatched
 // products fall back to a catch-all bucket. This is inherently approximate —
 // see README for how to adjust it.
+// 'ワンピース' is checked first in both brands' rule lists on purpose: real
+// product names commonly prefix it with another garment word to describe the
+// fabric/silhouette (e.g. "リブニットワンピース", "コットンシャツワンピース"),
+// which would otherwise get caught by that other word's category (トップス,
+// シャツ) before ever reaching a ワンピース rule later in the list.
 const CATEGORY_KEYWORDS = {
   uniqlo: [
-    ['インナー・ルームウェア', ['インナー', 'ルームウェア', 'パジャマ', '肌着', 'スリープ', 'ブラ', 'ショーツ', 'エアリズム']],
-    ['アウター', ['ジャケット', 'コート', 'ブルゾン', 'ダウン', 'アウター', 'マウンテンパーカ']],
+    ['ワンピース', ['ワンピース', 'オールインワン', 'サロペット', 'ジャンプスーツ']],
+    ['インナー・ルームウェア', ['インナー', 'ルームウェア', 'パジャマ', '肌着', 'スリープ', 'ブラ', 'ショーツ', 'エアリズム', 'キャミソール']],
+    ['アウター', ['ジャケット', 'コート', 'ブルゾン', 'ダウン', 'アウター', 'マウンテンパーカ', 'ベスト', 'フリース']],
     ['ビジネス', ['スーツ', 'セットアップ', 'スラックス', 'ビジネス', 'ネクタイ']],
     ['シャツ', ['シャツ', 'ブラウス']],
-    ['パンツ', ['パンツ', 'デニム', 'ジーンズ', 'スカート', 'ショートパンツ', 'ジョガー']],
-    ['トップス', ['Tシャツ', 'カットソー', 'ニット', 'セーター', 'スウェット', 'パーカ', 'カーディガン', 'ポロシャツ', 'トップス']],
+    ['パンツ', ['パンツ', 'デニム', 'ジーンズ', 'スカート', 'ショートパンツ', 'ジョガー', 'キュロット']],
+    ['トップス', ['Tシャツ', 'カットソー', 'ニット', 'セーター', 'スウェット', 'パーカ', 'カーディガン', 'ポロシャツ', 'トップス', 'プルオーバー']],
   ],
   gu: [
-    ['アウター・パンツ', ['ジャケット', 'コート', 'ブルゾン', 'ダウン', 'アウター', 'パンツ', 'デニム', 'スカート', 'ショートパンツ', 'ショーツ']],
-    ['トップス', ['Tシャツ', 'カットソー', 'ニット', 'セーター', 'スウェット', 'シャツ', 'ブラウス', 'パーカ', 'カーディガン', 'トップス']],
+    ['ワンピース', ['ワンピース', 'オールインワン', 'サロペット', 'ジャンプスーツ']],
+    ['アウター・パンツ', ['ジャケット', 'コート', 'ブルゾン', 'ダウン', 'アウター', 'パンツ', 'デニム', 'ジーンズ', 'スカート', 'ショートパンツ', 'ショーツ', 'ベスト', 'フリース', 'キュロット']],
+    ['トップス', ['Tシャツ', 'カットソー', 'ニット', 'セーター', 'スウェット', 'シャツ', 'ブラウス', 'パーカ', 'カーディガン', 'トップス', 'プルオーバー']],
   ],
 };
 const FALLBACK_CATEGORY = { uniqlo: 'その他', gu: 'グッズ・その他' };
@@ -495,39 +502,63 @@ function isSameUtcCalendarDay(isoA, isoB) {
 // it is updated in place rather than inserted again (see
 // isSameUtcCalendarDay) so repeated runs on the same day don't create
 // multiple points on the same day.
-// `processedProductIds` is shared across the *entire* run (every source),
-// not just this one. discoverProductUrls dedupes by exact URL, but listing
-// pages commonly link the same base product once per color/size variant
+//
+// `productRunState` is shared across the *entire* run (every source), not
+// just this one. discoverProductUrls dedupes by exact URL, but listing pages
+// commonly link the same base product once per color/size variant
 // (?colorDisplayCode=... etc.), and productIdFromUrl collapses all of those
-// down to one product_id — so without this guard, the same product could be
-// rendered and recorded multiple times in a single run. Re-extracting a
-// second time isn't guaranteed to yield the exact same price (variant
-// ordering in the page's own data isn't guaranteed stable), so a spurious
-// second observation could misfire classifyEventType as 'price_up' on a
-// product that was only just seen for the very first time this run. A
-// product is also commonly cross-listed on more than one *source* (e.g.
-// both the "sale" and "limited" pages) for the same reason.
-async function processProductUrl(browser, url, source, processedProductIds) {
+// down to one product_id. Different variants of the same product_id can
+// genuinely carry different real prices — most commonly because the same
+// product is cross-listed on both the "sale" and "limited-time-price"
+// sources at once, each showing its own price for that context. Recording
+// whichever occurrence happened to be discovered/processed first made the
+// price history flip-flop between the two depending on iteration order,
+// which looked like spurious 'price_up' swings on the dashboard. Instead,
+// every occurrence is rendered, and only the lowest price seen this run is
+// kept — ties keep whichever was recorded first, since it makes no
+// difference which. isNewProduct/previousPrice for a superseding (lower-
+// price) occurrence reuse what the *first* occurrence this run already
+// determined from the pre-run DB state, rather than re-querying (which would
+// now see that first occurrence's own just-written row and wrongly treat the
+// product as not-new / already-tracked).
+async function processProductUrl(browser, url, source, productRunState) {
   const productId = productIdFromUrl(url, source.brand);
-  if (processedProductIds.has(productId)) {
-    return { productId, skipped: true };
-  }
 
   const extracted = await renderAndExtract(browser, url);
   if (!extracted) {
     throw new Error('could not extract a price from the rendered page');
   }
 
-  const latest = await fetchLatestRecordedPrice(productId);
+  const existing = productRunState.get(productId);
+  if (existing && extracted.price >= existing.price) {
+    return { productId, skipped: true };
+  }
+
+  const nowIso = new Date().toISOString();
+
+  let isNewProduct;
+  let previousPrice;
+  let previousCurrency;
+  let existingRowId;
+  if (existing) {
+    ({ isNewProduct, previousPrice, previousCurrency } = existing);
+    existingRowId = existing.rowId;
+  } else {
+    const latest = await fetchLatestRecordedPrice(productId);
+    isNewProduct = !latest;
+    previousPrice = latest?.price ?? null;
+    previousCurrency = latest?.currency ?? null;
+    existingRowId = latest && isSameUtcCalendarDay(latest.scraped_at, nowIso) ? latest.id : null;
+  }
+
   const category = categorizeProduct(source.brand, extracted.name);
   const eventType = classifyEventType({
-    isNewProduct: !latest,
-    previousPrice: latest?.price ?? null,
+    isNewProduct,
+    previousPrice,
     currentPrice: extracted.price,
     listingType: source.listingType,
   });
 
-  const nowIso = new Date().toISOString();
   const row = {
     product_id: productId,
     product_name: extracted.name,
@@ -542,23 +573,26 @@ async function processProductUrl(browser, url, source, processedProductIds) {
     scraped_at: nowIso,
   };
 
-  if (latest && isSameUtcCalendarDay(latest.scraped_at, nowIso)) {
-    const { error: updateError } = await supabase.from('price_events').update(row).eq('id', latest.id);
+  let rowId;
+  if (existingRowId) {
+    const { error: updateError } = await supabase.from('price_events').update(row).eq('id', existingRowId);
     if (updateError) throw updateError;
+    rowId = existingRowId;
   } else {
-    const { error: insertError } = await supabase.from('price_events').insert(row);
+    const { data, error: insertError } = await supabase.from('price_events').insert(row).select('id').single();
     if (insertError) throw insertError;
+    rowId = data.id;
   }
 
-  // Only mark as done-this-run on success, so if this attempt failed we'd
-  // still want a later duplicate URL for the same product to get a chance.
-  processedProductIds.add(productId);
+  // Only recorded as done-this-run on success, so if this attempt failed a
+  // later occurrence of the same product still gets a chance.
+  productRunState.set(productId, { price: extracted.price, currency: extracted.currency, rowId, isNewProduct, previousPrice, previousCurrency });
 
-  const priceChanged = !latest || latest.price !== extracted.price || latest.currency !== extracted.currency;
+  const priceChanged = isNewProduct || previousPrice !== extracted.price || previousCurrency !== extracted.currency;
   return { productId, eventType, priceChanged, price: extracted.price, currency: extracted.currency };
 }
 
-async function processSource(browser, source, processedProductIds) {
+async function processSource(browser, source, productRunState) {
   const productUrls = await discoverProductUrls(source);
   console.log(`[${source.id}] discovered ${productUrls.length} product page(s)`);
 
@@ -576,23 +610,25 @@ async function processSource(browser, source, processedProductIds) {
 
   for (const url of targets) {
     try {
-      const result = await processProductUrl(browser, url, source, processedProductIds);
+      const result = await processProductUrl(browser, url, source, productRunState);
       if (result.skipped) {
         skipped++;
-        continue; // no request was made for this one, so no need to rate-limit
-      }
-      recorded++;
-      byEventType[result.eventType] = (byEventType[result.eventType] ?? 0) + 1;
-      if (result.priceChanged) {
-        priceChanged++;
-        console.log(
-          `[${source.id}] [${result.productId}] ${result.eventType}: ${result.price} ${result.currency}`
-        );
+      } else {
+        recorded++;
+        byEventType[result.eventType] = (byEventType[result.eventType] ?? 0) + 1;
+        if (result.priceChanged) {
+          priceChanged++;
+          console.log(
+            `[${source.id}] [${result.productId}] ${result.eventType}: ${result.price} ${result.currency}`
+          );
+        }
       }
     } catch (err) {
       failed++;
       console.error(`[${source.id}] failed for ${url}: ${err.message}`);
     }
+    // A render/request always happens above (success, skip-after-render, or
+    // failure alike), so always rate-limit before the next one.
     await sleep(REQUEST_DELAY_MS);
   }
 
@@ -600,7 +636,7 @@ async function processSource(browser, source, processedProductIds) {
     `[${source.id}] recorded ${recorded}/${productUrls.length} ` +
       `(first_markdown=${byEventType.first_markdown}, first_limited=${byEventType.first_limited}, ` +
       `markdown=${byEventType.markdown}, limited=${byEventType.limited}, price_up=${byEventType.price_up}), ` +
-      `${priceChanged} price change(s), ${skipped} skipped (already processed this run), ${failed} failed`
+      `${priceChanged} price change(s), ${skipped} skipped (equal-or-higher price than an earlier occurrence this run), ${failed} failed`
   );
 
   return { discovered: productUrls.length, recorded, priceChanged, skipped, failed };
@@ -738,10 +774,10 @@ async function main() {
 
     const totals = { discovered: 0, recorded: 0, priceChanged: 0, skipped: 0, failed: 0 };
     // Shared across every source in this run — see processProductUrl for why.
-    const processedProductIds = new Set();
+    const productRunState = new Map();
 
     for (const source of sources) {
-      const result = await processSource(browser, source, processedProductIds);
+      const result = await processSource(browser, source, productRunState);
       totals.discovered += result.discovered;
       totals.recorded += result.recorded;
       totals.priceChanged += result.priceChanged;
