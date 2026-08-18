@@ -525,6 +525,23 @@ function isPriceApiBody(body) {
   return Boolean(result && Array.isArray(result.l2s) && result.prices && typeof result.prices === 'object');
 }
 
+// Unlike JSON-LD's `priceCurrency`, which is the plain string "JPY", the
+// price API nests currency as its own object next to `value`. Stringifying
+// that object straight into the row would put "[object Object]" in
+// price_events.currency (and into every price the dashboard formats), so
+// only a real string is ever accepted and anything else falls back to JPY —
+// both storefronts this tracker crawls are the Japanese ones.
+function currencyCodeFromPriceNode(node) {
+  const currency = node?.currency;
+  if (typeof currency === 'string' && currency) return currency;
+  if (currency && typeof currency === 'object') {
+    for (const key of ['code', 'currencyCode', 'isoCode', 'symbol']) {
+      if (typeof currency[key] === 'string' && currency[key]) return currency[key];
+    }
+  }
+  return 'JPY';
+}
+
 // Every price a single l2Id (one purchasable colour+size) carries. `member`
 // is absent for products with no app-member price, which is why an ordinary
 // full-price product is unaffected by any of this.
@@ -540,7 +557,7 @@ function priceValuesFromPriceEntry(entry) {
       // Same sanity bounds the JSON-LD path applies, so a 0-yen placeholder
       // can't win by being numerically the lowest.
       if (Number.isNaN(numeric) || numeric <= 0 || numeric >= 1_000_000) continue;
-      values.push({ price: numeric, currency: node.currency || 'JPY', label: `${audience}.${kind}` });
+      values.push({ price: numeric, currency: currencyCodeFromPriceNode(node), label: `${audience}.${kind}` });
     }
   }
   return values;
@@ -658,8 +675,11 @@ function extractPriceAndName(html, url, candidateJsonResponses, log = () => {}) 
       `  price API price ${apiPrice.price} is lower than ` +
         `${result ? `the JSON-LD price ${result.price}` : 'anything the rendered HTML gave'} — using it`
     );
+    // Only the price moves: the JSON-LD's own priceCurrency is the more
+    // trustworthy currency of the two (a plain ISO string, straight off the
+    // page being recorded), so it is kept whenever the page had one.
     result = withLimitedPriceEndDateFallback(
-      { ...(result ?? {}), price: apiPrice.price, currency: apiPrice.currency },
+      { ...(result ?? {}), price: apiPrice.price, currency: result?.currency ?? apiPrice.currency },
       html,
       log
     );
