@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>価格イベント管理</title>
+    <style>
+      :root {
+        --bg: #f5f5f4;
+        --surface: #ffffff;
+        --text: #1c1917;
+        --muted: #78716c;
+        --border: #e7e5e4;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1c1917;
+          --surface: #292524;
+          --text: #f5f5f4;
+          --muted: #a8a29e;
+          --border: #44403c;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+      }
+      .shell {
+        max-width: 960px;
+        margin: 32px auto;
+        padding: 0 16px 64px;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 20px;
+      }
+      h1 {
+        font-size: 1.2rem;
+        margin-top: 0;
+      }
+      p.hint {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      form {
+        display: grid;
+        gap: 10px;
+        max-width: 320px;
+      }
+      .form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      .form-grid.wide {
+        max-width: none;
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      input,
+      select {
+        padding: 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font: inherit;
+      }
+      .full {
+        grid-column: 1 / -1;
+      }
+      button {
+        font: inherit;
+        cursor: pointer;
+        border-radius: 6px;
+        border: none;
+        padding: 9px 16px;
+      }
+      .btn-primary {
+        background: #1c1917;
+        color: #fff;
+      }
+      .btn-danger {
+        background: #b91c1c;
+        color: #fff;
+        padding: 4px 10px;
+        font-size: 0.75rem;
+      }
+      .btn-link {
+        background: none;
+        color: inherit;
+        text-decoration: underline;
+        padding: 0;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 20px;
+        font-size: 0.85rem;
+      }
+      th,
+      td {
+        border-bottom: 1px solid var(--border);
+        padding: 8px 6px;
+        text-align: left;
+      }
+      .error {
+        color: #b91c1c;
+        font-size: 0.85rem;
+      }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="card" id="app">読み込み中...</div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

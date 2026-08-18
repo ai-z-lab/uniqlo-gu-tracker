@@ -7,6 +7,8 @@ UNIQLO / GU の「セール一覧」「期間限定価格一覧」などのカ�
 一覧ページに載っている商品を都度拾い直すので、値下げ・期間限定価格の対象
 商品を網羅的に追跡できます。
 
+公開URL: https://ai-z-lab.github.io/uniqlo-gu-tracker/
+
 ## 構成
 
 ```
@@ -107,6 +109,12 @@ docs/                         公開する静的サイト(ブランド/性別/�
   商品ページの schema.org JSON-LD にある `Offer.priceValidUntil`(price_events
   の `limited_price_end_date` 列)で、見つからない場合はページ内の
   「◯月◯日まで」というテキストからの推測にフォールバックします。
+- 手動での追加・修正用に、公開ダッシュボードからはリンクされていない
+  隠し管理UI (`docs/manage-7q2k9x4d/`) があります。URLの秘匿性そのものは
+  セキュリティ境界にしておらず、実際に書き込めるのは Supabase Auth で
+  ログインしたユーザーだけです(RLSは
+  [`0005_add_authenticated_write_policies.sql`](./supabase/migrations/0005_add_authenticated_write_policies.sql)
+  参照)。詳細は下記セットアップ手順の4番目を参照してください。
 
 ## セットアップ(このリポジトリのコードだけでは完結しない、手動で必要な3ステップ)
 
@@ -129,6 +137,9 @@ Supabase ダッシュボード → 該当プロジェクト → **SQL Editor** �
 4. [`supabase/migrations/0004_replace_new_with_first_seen_labels.sql`](./supabase/migrations/0004_replace_new_with_first_seen_labels.sql)
    — `event_type` の `'new'`(新作)を `'first_markdown'`(初値下げ)/
    `'first_limited'`(初期間限定)に置き換え
+5. [`supabase/migrations/0005_add_authenticated_write_policies.sql`](./supabase/migrations/0005_add_authenticated_write_policies.sql)
+   — 隠し管理UI (`docs/manage-7q2k9x4d/`) からの手動追加・削除を許可する
+   RLS ポリシーを追加(ログイン済みユーザーのみ)
 
 ### 2. スクレイパー用の Secrets を GitHub リポジトリに追加する
 
@@ -151,6 +162,19 @@ Settings → Pages → Build and deployment → Source を **GitHub Actions** �
 一度有効化すれば、`main` への push、または Actions タブから
 `Deploy GitHub Pages` ワークフローを手動実行 (workflow_dispatch) するたびに
 `https://<owner>.github.io/uniqlo-gu-tracker/` へ自動デプロイされます。
+
+### 4. 隠し管理UIでログインできるようにする(任意)
+
+手動で価格イベントを追加・削除したい場合のみ必要です。スクレイパーだけで
+運用する場合はこの手順は不要です。
+
+1. 上記のマイグレーション `0005` を実行する。
+2. Supabase ダッシュボード → Authentication → Users → **Add user** で
+   管理者用のメールアドレス・パスワードを作成する(Auto Confirm User を
+   有効にしてすぐログインできるようにする)。
+3. `https://<owner>.github.io/uniqlo-gu-tracker/manage-7q2k9x4d/` にアクセスし、
+   作成したユーザーでログインする。このURLはダッシュボードのどこからも
+   リンクされていない。
 
 ## 巡回する一覧ページの追加方法
 
