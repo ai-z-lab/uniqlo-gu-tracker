@@ -203,6 +203,21 @@ function renderCard(product) {
   price.textContent = fmt.format(latest.price);
   priceRow.appendChild(price);
 
+  // 通常価格が別途取れている商品(GUのアプリ会員特別価格など)だけ、元値と
+  // 割引率を添える。値下げされただけの商品は通常価格＝実売価格になるため
+  // list_price が入らず、ここは出ません(「0%OFF」を出さないため)。
+  if (latest.list_price != null && latest.list_price > latest.price) {
+    const wasPrice = document.createElement("span");
+    wasPrice.className = "was-price";
+    wasPrice.textContent = fmt.format(latest.list_price);
+    priceRow.appendChild(wasPrice);
+
+    const off = document.createElement("span");
+    off.className = "discount";
+    off.textContent = `${Math.round((1 - latest.price / latest.list_price) * 100)}%OFF`;
+    priceRow.appendChild(off);
+  }
+
   if (previous && previous.price !== latest.price) {
     const diff = latest.price - previous.price;
     const delta = document.createElement("span");
@@ -211,6 +226,33 @@ function renderCard(product) {
     priceRow.appendChild(delta);
   }
   card.appendChild(priceRow);
+
+  // 商品ページ自身のデータから決まる価格の種類と在庫。どの一覧ページで
+  // 見つけたかに由来する event_type(セクション分け)とは別物なので、
+  // セクションと重複する情報は出さない。
+  const facts = document.createElement("div");
+  facts.className = "facts";
+
+  if (latest.price_type === "member") {
+    const memberTag = document.createElement("span");
+    memberTag.className = "fact member";
+    memberTag.textContent = "アプリ会員価格";
+    facts.appendChild(memberTag);
+  }
+
+  if (latest.stock_status === "stock_out") {
+    const soldOut = document.createElement("span");
+    soldOut.className = "fact sold-out";
+    soldOut.textContent = "在庫なし";
+    facts.appendChild(soldOut);
+  } else if (latest.in_stock_size_count != null && latest.in_stock_size_count > 0) {
+    const sizes = document.createElement("span");
+    sizes.className = "fact sizes";
+    sizes.textContent = `在庫${latest.in_stock_size_count}サイズ`;
+    facts.appendChild(sizes);
+  }
+
+  if (facts.childElementCount > 0) card.appendChild(facts);
 
   const endDateText = formatLimitedPriceEndDate(latest.limited_price_end_date);
   if (endDateText) {
@@ -438,7 +480,7 @@ async function main() {
   const { data, error } = await supabase
     .from("price_events")
     .select(
-      "product_id, product_name, brand, gender, category, event_type, url, price, currency, scraped_at, limited_price_end_date"
+      "product_id, product_name, brand, gender, category, event_type, url, price, list_price, currency, price_type, stock_status, in_stock_size_count, scraped_at, limited_price_end_date"
     )
     .order("scraped_at", { ascending: true });
 

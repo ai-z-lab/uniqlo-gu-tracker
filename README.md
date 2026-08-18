@@ -52,6 +52,19 @@ docs/                         公開する静的サイト(ブランド/性別/�
     そこで (a) URL の `colorDisplayCode`/`sizeDisplayCode` に一致する l2s
     エントリ、(b) それでも絞り切れない場合は JSON-LD で特定したバリエーション
     と同じ通常価格帯のエントリ、の順に絞り込んでから最安値を採ります。
+  - 同じ価格APIのレスポンスから、価格以外に次の3つも記録します。いずれも
+    以前から手元には来ていたのに保存せず捨てていた情報で、**過去に遡って
+    埋めることはできません**(記録開始が遅れたぶんの履歴は失われます)。
+    - `list_price`: 通常価格。選択中の色のSKUのうち最も高い `guest.base` を
+      採ります(割引を過大に見せないため)。実売価格より高い場合のみ入ります。
+    - `price_type`: 採用した価格の種類。`member`(アプリ会員特別価格を採用)/
+      `limited`(終了日のある期間限定価格)/ `markdown`(それ以外)。
+      `member` は**価格APIの会員価格が実際に採用された場合のみ**付きます
+      (会員価格が通常価格と同額なら、会員割引は存在しないため)。
+    - `stock_status` / `in_stock_size_count`: 同じレスポンスに同梱されている
+      `result.stocks` から、選択中の色のSKUで在庫があるサイズ数と、1つ以上
+      あるかどうか。`statusCode` が読めないSKUは「在庫なし」ではなく
+      「不明」として数えません。
   - 価格APIのレスポンスは `domcontentloaded` の**後**に飛ぶため、レンダリング
     後に最大 `PRICE_API_WAIT_MS`(既定4秒)だけこのレスポンスを待ちます
     (到着した時点で待機は終了するので、通常は待ち時間はほとんど増えません)。
@@ -103,6 +116,18 @@ docs/                         公開する静的サイト(ブランド/性別/�
   値下げ段階の日付、期間限定は各商品が最初に期間限定価格になった日付を
   集計しています(`groupProductsByDate()`)。クリックでの絞り込みなどは行わ
   ない、あくまで一覧表示のみの機能です。
+- 通常価格が別途取れている商品には、実売価格の横に元値(取り消し線)と割引率を
+  表示します(`list_price` 列)。ただし**値下げされただけの商品では出ません** —
+  価格APIは `includePreviousPrice=false` で呼ばれており「値下げ前の価格」は
+  取得できないためです。通常価格と実売価格が同時に提示されるのは、GUの
+  アプリ会員特別価格のようなケースに限られます(例: ワイドカーゴパンツ UL の
+  ¥3,990 → ¥2,990 で 25%OFF)。UNIQLOの期間限定価格は通常価格＝実売価格として
+  提示されるため、割引率は表示されません。
+- 商品カードには、商品ページ自身のデータから読み取った事実をチップで表示します。
+  「アプリ会員価格」(`price_type` が `'member'`)と、在庫の状況
+  (`stock_status` / `in_stock_size_count`)です。セクション分けに使う
+  `event_type` が「どの一覧ページで発見したか」に由来する推定なのに対し、
+  こちらは商品ページのデータそのものなので、別系統の情報として扱っています。
 - 期間限定価格の商品には、可能な場合「◯月◯日まで」を表示します。取得元は
   商品ページの schema.org JSON-LD にある `Offer.priceValidUntil`(price_events
   の `limited_price_end_date` 列)で、見つからない場合はページ内の
@@ -129,6 +154,9 @@ Supabase ダッシュボード → 該当プロジェクト → **SQL Editor** �
 4. [`supabase/migrations/0004_replace_new_with_first_seen_labels.sql`](./supabase/migrations/0004_replace_new_with_first_seen_labels.sql)
    — `event_type` の `'new'`(新作)を `'first_markdown'`(初値下げ)/
    `'first_limited'`(初期間限定)に置き換え
+5. [`supabase/migrations/0005_add_list_price_price_type_stock.sql`](./supabase/migrations/0005_add_list_price_price_type_stock.sql)
+   — 通常価格(`list_price`)・価格の種類(`price_type`)・在庫
+   (`stock_status` / `in_stock_size_count`)の各列を追加
 
 ### 2. スクレイパー用の Secrets を GitHub リポジトリに追加する
 

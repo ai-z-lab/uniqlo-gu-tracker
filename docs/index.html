@@ -322,6 +322,43 @@
     .delta.down { color: var(--down); }
     .delta.up { color: var(--up); }
 
+    /* 元値。取り消し線で「これがもう払わなくていい額」だと一目で分かるようにする。 */
+    .was-price {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-decoration: line-through;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .discount {
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--down);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 商品ページ自身から読み取った事実(価格の種類・在庫)。セクション分けに
+       使う event_type のバッジとは別系統なので、控えめな枠付きチップにする。 */
+    .facts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem;
+      margin-bottom: 0.35rem;
+    }
+
+    .fact {
+      font-size: 0.68rem;
+      font-weight: 700;
+      line-height: 1.6;
+      padding: 0 0.4rem;
+      border-radius: 3px;
+      border: 1px solid currentColor;
+    }
+
+    .fact.member { color: var(--status-limited); }
+    .fact.sold-out { color: var(--text-muted); }
+    .fact.sizes { color: var(--text-muted); font-weight: 600; }
+
     .end-date {
       display: inline-block;
       color: var(--status-limited);
