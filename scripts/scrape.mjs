@@ -1326,9 +1326,15 @@ async function debugSingleProduct(browser, url, outDir, { via = 'direct' } = {})
   // reflects what a real run would record rather than a parallel reading of
   // the same page.
   const result = extractPriceAndName(html, url, candidateJsonResponses, trace);
+  // The summary line carries every field that ends up in the price_events
+  // row, so a debug run can be checked against the site at a glance without
+  // digging back into each product's own trace.
   const summary = result
-    ? `RESULT: price=${result.price} ${result.currency}, name=${JSON.stringify(result.name)}, ` +
-      `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate)}`
+    ? `RESULT: price=${result.price} ${result.currency}` +
+      ` (list ${result.listPrice ?? 'n/a'}, ${result.priceType}),` +
+      ` stock=${result.stockStatus ?? 'unknown'} ${result.inStockSizeCount ?? '?'} size(s),` +
+      ` name=${JSON.stringify(result.name)},` +
+      ` limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate)}`
     : 'RESULT: no price found via any strategy';
   trace(summary);
 
