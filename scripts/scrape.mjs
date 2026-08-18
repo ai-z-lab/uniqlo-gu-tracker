@@ -53,9 +53,15 @@ const REQUEST_DELAY_MS = 150;
 // becomes unresponsive, and a page that never reaches "networkidle" (common
 // with sites that keep analytics/polling connections open) must not be
 // allowed to stall the whole run.
-const PRODUCT_TIMEOUT_MS = 10_000;
+const PRODUCT_TIMEOUT_MS = 12_000;
 const NAV_TIMEOUT_MS = 7_000;
 const RENDER_SETTLE_MS = 1_000;
+// How long to keep waiting, after navigation resolves, for the brand's own
+// price API response to arrive — the member/期間限定 price exists nowhere else
+// (see extractPriceFromPriceApiBody). The wait ends the moment that response
+// lands, so a product whose price API is quick costs nothing extra; only
+// products where it never arrives pay the full budget.
+const PRICE_API_WAIT_MS = 4_000;
 const CONTENT_TIMEOUT_MS = 5_000;
 const SCREENSHOT_TIMEOUT_MS = 8_000;
 const CONTEXT_CLOSE_TIMEOUT_MS = 5_000;
@@ -498,6 +504,196 @@ function productIdFromUrl(url, brand) {
   return `${brand}-${code}`;
 }
 
+// --- The brand's own price API (the only place a member/限定 price exists) ---
+//
+// Both uniqlo.com and gu-global.com render the price client-side from
+//   /api/commerce/v5/ja/products/<code>/price-groups/00/l2s?withPrices=true&withMemberPricing=true
+// whose payload is:
+//   result.l2s:    [{ l2Id, color: { code, displayCode }, size: { code, displayCode }, … }]
+//   result.prices: { <l2Id>: { guest:  { base: { currency, value }, promo: { … } },
+//                              member: { base: { currency, value }, promo: { … } } } }
+//
+// The JSON-LD embedded in the page only ever carries the *guest* price. When a
+// product is on 期間限定価格/アプリ会員特別価格, the discounted amount the site
+// actually advertises exists solely in `member` here — confirmed on GU
+// サテンキャミソール E361445-000, where the page shows「¥1,490 アプリ会員特別価格
+// ¥990」, JSON-LD says 1490, and this API says guest.base=1490, member.base=990.
+// Reading only the JSON-LD is what made the dashboard show regular prices for
+// products found on the 期間限定価格一覧.
+function isPriceApiBody(body) {
+  const result = body?.result;
+  return Boolean(result && Array.isArray(result.l2s) && result.prices && typeof result.prices === 'object');
+}
+
+// Every price a single l2Id (one purchasable colour+size) carries. `member`
+// is absent for products with no app-member price, which is why an ordinary
+// full-price product is unaffected by any of this.
+function priceValuesFromPriceEntry(entry) {
+  const values = [];
+  for (const audience of ['guest', 'member']) {
+    const group = entry?.[audience];
+    if (!group || typeof group !== 'object') continue;
+    for (const kind of ['base', 'promo']) {
+      const node = group[kind];
+      if (!node || typeof node !== 'object') continue;
+      const numeric = typeof node.value === 'number' ? node.value : Number(node.value);
+      // Same sanity bounds the JSON-LD path applies, so a 0-yen placeholder
+      // can't win by being numerically the lowest.
+      if (Number.isNaN(numeric) || numeric <= 0 || numeric >= 1_000_000) continue;
+      values.push({ price: numeric, currency: node.currency || 'JPY', label: `${audience}.${kind}` });
+    }
+  }
+  return values;
+}
+
+// Narrows result.l2s down to the SKUs the requested URL is actually showing,
+// then returns the lowest price any of them can be bought at today.
+//
+// Narrowing matters because result.prices covers *every* colour and size of
+// the product, and colours routinely sit at different prices (one colourway
+// on clearance while the rest are full price). Two filters, in order:
+//  1. the colour/size display codes in the URL's query string, which is the
+//     precise answer whenever the URL carries them;
+//  2. failing that (or in addition), SKUs whose guest price equals the price
+//     already read from this URL's JSON-LD variant — i.e. the same price tier
+//     as the variant the page is displaying. This is what keeps a URL with no
+//     colour code from picking up some other colour's deeper discount.
+// If a filter would leave nothing, it is skipped rather than applied, so a
+// site-side change to the code format degrades to a broader match instead of
+// dropping the price entirely.
+function extractPriceFromPriceApiBody(body, url, jsonLdPrice, log = () => {}, source = 'price API') {
+  const { l2s, prices } = body.result;
+
+  let colorCode = null;
+  let sizeCode = null;
+  try {
+    const params = new URL(url).searchParams;
+    colorCode = params.get('colorDisplayCode');
+    sizeCode = params.get('sizeDisplayCode');
+  } catch {
+    // malformed URL — fall through with no variant filter
+  }
+
+  let selected = l2s.filter(
+    (l2) =>
+      (!colorCode || l2?.color?.displayCode === colorCode) && (!sizeCode || l2?.size?.displayCode === sizeCode)
+  );
+  if (selected.length === 0) {
+    log(
+      `    ${source}: no l2s entry matches colorDisplayCode=${JSON.stringify(colorCode)} ` +
+        `sizeDisplayCode=${JSON.stringify(sizeCode)} — considering all ${l2s.length} of them`
+    );
+    selected = l2s;
+  } else {
+    log(
+      `    ${source}: ${selected.length}/${l2s.length} l2s entries match colorDisplayCode=${JSON.stringify(colorCode)} ` +
+        `sizeDisplayCode=${JSON.stringify(sizeCode)}`
+    );
+  }
+
+  if (jsonLdPrice != null) {
+    const sameTier = selected.filter((l2) =>
+      priceValuesFromPriceEntry(prices[l2?.l2Id]).some(
+        (value) => value.label.startsWith('guest.') && value.price === jsonLdPrice
+      )
+    );
+    if (sameTier.length > 0) {
+      log(`    ${source}: ${sameTier.length} of those have guest price ${jsonLdPrice} (the JSON-LD variant's tier)`);
+      selected = sameTier;
+    } else {
+      log(`    ${source}: none of those have guest price ${jsonLdPrice}, keeping the wider set`);
+    }
+  }
+
+  let best = null;
+  for (const l2 of selected) {
+    for (const value of priceValuesFromPriceEntry(prices[l2?.l2Id])) {
+      if (!best || value.price < best.price) best = { ...value, l2Id: l2?.l2Id };
+    }
+  }
+
+  if (!best) {
+    log(`    ${source}: no usable price among ${selected.length} l2s entry/entries`);
+    return null;
+  }
+  log(`    ${source}: lowest purchasable price is ${best.price} ${best.currency} (${best.label} of l2Id ${best.l2Id})`);
+  return { price: best.price, currency: best.currency };
+}
+
+// Scans the JSON responses the page fetched for the price API above. Only
+// responses whose own URL carries this product's code are considered, so a
+// recommendation widget's payload for other products can never be mistaken
+// for this one's price.
+function extractPriceFromPriceApiResponses(responses, url, jsonLdPrice, log = () => {}) {
+  const productCode = (url.match(/\/products\/([A-Za-z0-9-]+)/) || [])[1];
+  let best = null;
+  for (const { url: responseUrl, body } of responses) {
+    if (productCode && !responseUrl.includes(productCode)) continue;
+    if (!isPriceApiBody(body)) continue;
+    log(`  price API response ${responseUrl}`);
+    const found = extractPriceFromPriceApiBody(body, url, jsonLdPrice, log);
+    if (found && (!best || found.price < best.price)) best = found;
+  }
+  if (!best) log('  no l2s price API response found among the sniffed JSON responses');
+  return best;
+}
+
+// The single entry point both the real scraper and the debug dump use, so a
+// debug trace can never disagree with what a scheduled run would record.
+//
+// The JSON-LD is still what identifies the product (its name, its
+// priceValidUntil end date, and the per-variant regular price); the price API
+// can only *lower* the price from there, which is exactly the member/期間限定
+// case. Falling back to a blind search of the sniffed JSON stays last: it can
+// pick up any number that merely looks like a price, so it must not get the
+// chance to override a price that one of the structured paths understood.
+function extractPriceAndName(html, url, candidateJsonResponses, log = () => {}) {
+  log('--- price extraction from rendered HTML (JSON-LD / meta / __NEXT_DATA__) ---');
+  let result = extractPriceFromRenderedHtml(html, url, log);
+
+  log(`--- brand price API, across ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
+  const apiPrice = extractPriceFromPriceApiResponses(candidateJsonResponses, url, result?.price ?? null, log);
+  if (apiPrice && (!result || apiPrice.price < result.price)) {
+    log(
+      `  price API price ${apiPrice.price} is lower than ` +
+        `${result ? `the JSON-LD price ${result.price}` : 'anything the rendered HTML gave'} — using it`
+    );
+    result = withLimitedPriceEndDateFallback(
+      { ...(result ?? {}), price: apiPrice.price, currency: apiPrice.currency },
+      html,
+      log
+    );
+  } else if (apiPrice) {
+    log(`  price API price ${apiPrice.price} is not lower than the JSON-LD price ${result.price} — keeping the latter`);
+  }
+
+  if (!result) {
+    log(`--- nothing structured matched, blind-searching ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
+    for (const { url: responseUrl, body } of candidateJsonResponses) {
+      const price = findPriceInObject(body);
+      log(`  response ${responseUrl}: ${price != null ? `found price=${price}` : 'no plausible price field'}`);
+      if (price != null) {
+        result = withLimitedPriceEndDateFallback({ price, currency: 'JPY' }, html, log);
+        break;
+      }
+    }
+  }
+
+  if (!result) return null;
+
+  // Prefer the name captured from the exact same JSON-LD candidate as the
+  // price (see extractPriceFromRenderedHtml); only fall back to an
+  // independent og:title/<title> scan when the price came from a path that
+  // has no associated name of its own.
+  const name = result.name ?? extractNameFromRenderedHtml(html);
+  return {
+    price: result.price,
+    currency: result.currency,
+    name,
+    limitedPriceEndDate: result.limitedPriceEndDate ?? null,
+  };
+}
+
 // --- Rendering a product page and extracting price/name from it ---
 
 async function collectRenderedPage(
@@ -505,8 +701,25 @@ async function collectRenderedPage(
   url,
   productCode,
   candidateJsonResponses,
-  { navTimeoutMs = NAV_TIMEOUT_MS, settleMs = RENDER_SETTLE_MS, onlyMatchingProductCode = true, log = () => {} } = {}
+  {
+    navTimeoutMs = NAV_TIMEOUT_MS,
+    settleMs = RENDER_SETTLE_MS,
+    priceApiWaitMs = PRICE_API_WAIT_MS,
+    onlyMatchingProductCode = true,
+    log = () => {},
+  } = {}
 ) {
+  // Resolved as soon as a captured response turns out to be the price API,
+  // so the settle below can stop early instead of always burning its full
+  // budget. Waiting for it is not optional: the price API is fetched by the
+  // page's own JavaScript *after* domcontentloaded, so a fixed short settle
+  // would sometimes read the DOM before the member/期間限定 price exists and
+  // silently record the regular price instead.
+  let resolvePriceApiSeen;
+  const priceApiSeen = new Promise((resolve) => {
+    resolvePriceApiSeen = resolve;
+  });
+
   page.on('response', async (response) => {
     try {
       const contentType = response.headers()['content-type'] || '';
@@ -514,6 +727,10 @@ async function collectRenderedPage(
       if (onlyMatchingProductCode && productCode && !response.url().includes(productCode)) return;
       const json = await response.json();
       candidateJsonResponses.push({ url: response.url(), body: json });
+      if ((!productCode || response.url().includes(productCode)) && isPriceApiBody(json)) {
+        log(`price API response captured: ${response.url()}`);
+        resolvePriceApiSeen();
+      }
     } catch {
       // response body not readable as JSON, or already consumed — ignore
     }
@@ -521,7 +738,11 @@ async function collectRenderedPage(
 
   log(`goto start (timeout ${navTimeoutMs}ms)`);
   await withTimeout(page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs }), navTimeoutMs + 2_000, 'goto');
-  log('goto done, settling');
+  log('goto done, waiting for the price API');
+  await withTimeout(priceApiSeen, priceApiWaitMs, 'price API response').catch(() => {
+    log(`no price API response within ${priceApiWaitMs}ms — continuing with whatever the page rendered`);
+  });
+  log('settling');
   await page.waitForTimeout(settleMs);
   log('reading rendered content');
   const html = await withTimeout(page.content(), CONTENT_TIMEOUT_MS, 'page.content');
@@ -542,10 +763,11 @@ async function renderAndExtract(browser, url, { log = () => {}, renderOptions = 
   const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
   const page = await context.newPage();
 
-  // The price/stock API response is sniffed as a fallback, restricted to
-  // responses whose own URL mentions this product's code — otherwise a
-  // recommendation/cross-sell widget's API call for a *different* product
-  // could be mistaken for this one's price.
+  // The JSON responses the page fetches are captured because the member/
+  // 期間限定 price lives only in one of them (the l2s price API). Capture is
+  // restricted to responses whose own URL mentions this product's code —
+  // otherwise a recommendation/cross-sell widget's API call for a *different*
+  // product could be mistaken for this one's price.
   const candidateJsonResponses = [];
 
   try {
@@ -555,36 +777,17 @@ async function renderAndExtract(browser, url, { log = () => {}, renderOptions = 
       url
     );
 
-    log('--- price extraction from rendered HTML (JSON-LD / meta / __NEXT_DATA__) ---');
-    let result = extractPriceFromRenderedHtml(renderedHtml, url, log);
-    if (!result) {
-      log(`--- rendered HTML gave nothing, trying ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
-      for (const { url: responseUrl, body } of candidateJsonResponses) {
-        const price = findPriceInObject(body);
-        log(`  response ${responseUrl}: ${price != null ? `found price=${price}` : 'no plausible price field'}`);
-        if (price != null) {
-          result = { price, currency: 'JPY' };
-          break;
-        }
-      }
-    }
-
+    const result = extractPriceAndName(renderedHtml, url, candidateJsonResponses, log);
     if (!result) {
       log('extraction FAILED: no price found via any strategy');
       return null;
     }
 
-    // Prefer the name captured from the exact same JSON-LD candidate as the
-    // price (see extractPriceFromRenderedHtml); only fall back to an
-    // independent og:title/<title> scan when the price came from a path
-    // that has no associated name of its own (meta tag / __NEXT_DATA__ /
-    // sniffed JSON response).
-    const name = result.name ?? extractNameFromRenderedHtml(renderedHtml);
     log(
-      `extraction SUCCEEDED: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}, ` +
-        `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate ?? null)}`
+      `extraction SUCCEEDED: price=${result.price} ${result.currency}, name=${JSON.stringify(result.name)}, ` +
+        `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate)}`
     );
-    return { price: result.price, currency: result.currency, name, limitedPriceEndDate: result.limitedPriceEndDate ?? null };
+    return result;
   } finally {
     await closeContextSafely(context, log);
   }
@@ -635,8 +838,10 @@ function isSameUtcCalendarDay(isoA, isoB) {
 // price history flip-flop between the two depending on iteration order,
 // which looked like spurious 'price_up' swings on the dashboard. Instead,
 // every occurrence is rendered, and only the lowest price seen this run is
-// kept — ties keep whichever was recorded first, since it makes no
-// difference which. isNewProduct/previousPrice for a superseding (lower-
+// kept. An equal-priced occurrence still supersedes the stored one when it
+// comes from a 'limited' source and the stored one did not, because at equal
+// price the listing the product was found on is the only thing that differs
+// and 期間限定価格一覧 is the more specific statement (see below). isNewProduct/previousPrice for a superseding (lower-
 // price) occurrence reuse what the *first* occurrence this run already
 // determined from the pre-run DB state, rather than re-querying (which would
 // now see that first occurrence's own just-written row and wrongly treat the
@@ -650,8 +855,24 @@ async function processProductUrl(browser, url, source, productRunState) {
   }
 
   const existing = productRunState.get(productId);
-  if (existing && extracted.price >= existing.price) {
-    return { productId, skipped: true };
+  if (existing) {
+    const isCheaper = extracted.price < existing.price;
+    // A tie between a 'sale' occurrence and a 'limited' one is not arbitrary,
+    // even though the price is identical. The same product is routinely
+    // listed on both 値下げ一覧 and 期間限定価格一覧, and both listings link the
+    // same product page, so both occurrences now extract the same price —
+    // which means "keep the lowest, first one wins ties" was really "whichever
+    // source happens to come first in sources.json wins", and sale sources are
+    // listed first. The stored row's event_type is what the dashboard
+    // sections on, so every such product landed under 値下げ and none of them
+    // under 期間限定. Let a 'limited' occurrence supersede an equal-priced
+    // non-limited one so the more specific listing decides the section. The
+    // reverse never applies, so this cannot oscillate.
+    const upgradesToLimited =
+      extracted.price === existing.price && source.listingType === 'limited' && existing.listingType !== 'limited';
+    if (!isCheaper && !upgradesToLimited) {
+      return { productId, skipped: true };
+    }
   }
 
   const nowIso = new Date().toISOString();
@@ -706,7 +927,15 @@ async function processProductUrl(browser, url, source, productRunState) {
 
   // Only recorded as done-this-run on success, so if this attempt failed a
   // later occurrence of the same product still gets a chance.
-  productRunState.set(productId, { price: extracted.price, currency: extracted.currency, rowId, isNewProduct, previousPrice, previousCurrency });
+  productRunState.set(productId, {
+    price: extracted.price,
+    currency: extracted.currency,
+    listingType: source.listingType,
+    rowId,
+    isNewProduct,
+    previousPrice,
+    previousCurrency,
+  });
 
   const priceChanged = isNewProduct || previousPrice !== extracted.price || previousCurrency !== extracted.currency;
   return { productId, eventType, priceChanged, price: extracted.price, currency: extracted.currency };
@@ -983,29 +1212,14 @@ async function debugSingleProduct(browser, url, outDir, { via = 'direct' } = {})
     if (candidates.length > 24) trace(`    ... ${candidates.length - 24} more price-shaped field(s) not printed`);
   }
 
-  trace('--- price extraction from rendered HTML (JSON-LD / meta / __NEXT_DATA__) ---');
-  let result = extractPriceFromRenderedHtml(html, url, trace);
-  if (!result) {
-    trace(`--- rendered HTML gave nothing, trying ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
-    for (const { url: responseUrl, body } of candidateJsonResponses) {
-      const price = findPriceInObject(body);
-      trace(`  response ${responseUrl}: ${price != null ? `found price=${price}` : 'no plausible price field'}`);
-      if (price != null) {
-        result = { price, currency: 'JPY' };
-        break;
-      }
-    }
-  }
-
-  let summary;
-  if (result) {
-    const name = result.name ?? extractNameFromRenderedHtml(html);
-    summary =
-      `RESULT: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}, ` +
-      `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate ?? null)}`;
-  } else {
-    summary = 'RESULT: no price found via any strategy';
-  }
+  // Exactly the function the scheduled scraper calls, so this trace always
+  // reflects what a real run would record rather than a parallel reading of
+  // the same page.
+  const result = extractPriceAndName(html, url, candidateJsonResponses, trace);
+  const summary = result
+    ? `RESULT: price=${result.price} ${result.currency}, name=${JSON.stringify(result.name)}, ` +
+      `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate)}`
+    : 'RESULT: no price found via any strategy';
   trace(summary);
 
   await writeFile(path.join(outDir, 'extraction-trace.txt'), traceLines.join('\n'), 'utf-8');
