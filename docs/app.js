@@ -233,11 +233,17 @@ function renderCard(product) {
   const facts = document.createElement("div");
   facts.className = "facts";
 
-  if (latest.price_type === "member") {
-    const memberTag = document.createElement("span");
-    memberTag.className = "fact member";
-    memberTag.textContent = "アプリ会員価格";
-    facts.appendChild(memberTag);
+  const PRICE_TYPE_LABELS = {
+    member: "アプリ会員価格",
+    remarkdown: "再値下げ",
+  };
+  // 'limited' / 'markdown' はセクション名と重複するので出さない。
+  const priceTypeLabel = PRICE_TYPE_LABELS[latest.price_type];
+  if (priceTypeLabel) {
+    const typeTag = document.createElement("span");
+    typeTag.className = `fact ${latest.price_type}`;
+    typeTag.textContent = priceTypeLabel;
+    facts.appendChild(typeTag);
   }
 
   if (latest.stock_status === "stock_out") {

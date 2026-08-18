@@ -790,8 +790,13 @@ function extractPriceAndName(html, url, candidateJsonResponses, log = () => {}) 
     currency: result.currency,
     name,
     limitedPriceEndDate: result.limitedPriceEndDate ?? null,
-    // Only meaningful when it is actually above the recorded price.
-    listPrice: listPrice != null && listPrice > result.price ? listPrice : null,
+    // Recorded whenever it is known, even when it equals the price paid.
+    // "There is no member discount today" is itself a fact worth keeping —
+    // nulling it would make a full-price observation indistinguishable from
+    // one where the guest price could not be read at all. Deciding whether a
+    // discount exists is then the reader's job: it does, exactly when
+    // list_price > price.
+    listPrice,
     priceType,
     // Stock is independent of which price won, so it is taken from the API
     // response whenever there was one — including when its price lost.
@@ -904,7 +909,7 @@ async function renderAndExtract(browser, url, { log = () => {}, renderOptions = 
 async function fetchLatestRecordedPrice(productId) {
   const { data, error } = await supabase
     .from('price_events')
-    .select('id, price, currency, scraped_at')
+    .select('id, price, currency, price_type, limited_price_end_date, scraped_at')
     .eq('product_id', productId)
     .order('scraped_at', { ascending: false })
     .limit(1);
@@ -919,6 +924,35 @@ async function fetchLatestRecordedPrice(productId) {
 // for no real reason.
 function isSameUtcCalendarDay(isoA, isoB) {
   return isoA.slice(0, 10) === isoB.slice(0, 10);
+}
+
+// 再値下げ — a 期間限定価格 stacked on top of a product that was *already*
+// permanently marked down — is the one price "型" the product page cannot
+// tell you about. The page shows today's price and today's flags; that this
+// same product sat at a plain 値下げ price last week exists only in our own
+// history. So unlike member/limited/markdown, which are read straight off the
+// page, this one is decided by comparing against the previous recorded row.
+//
+// It refines 'limited' only. A GU アプリ会員特別価格 is a different mechanism
+// (a membership price, not a further markdown), and 再値下げ as the reference
+// material defines it is specifically 通常値下げ→期間限定価格, so 'member' is
+// left alone rather than being overwritten and losing that distinction.
+//
+// Rows written before price_type existed still carry limited_price_end_date,
+// which is enough to tell whether that observation was a period-limited price
+// — so the check works against history already in the table instead of
+// needing two fresh scrapes to become useful.
+function previousPriceTypeOf(latest) {
+  if (!latest) return null;
+  if (latest.price_type) return latest.price_type;
+  return latest.limited_price_end_date ? 'limited' : 'markdown';
+}
+
+function applyRemarkdown(priceType, previousPriceType, log = () => {}) {
+  if (priceType !== 'limited') return priceType;
+  if (previousPriceType !== 'markdown' && previousPriceType !== 'remarkdown') return priceType;
+  log(`price type refined to 'remarkdown' (previous observation was '${previousPriceType}')`);
+  return 'remarkdown';
 }
 
 // Records one observation per product on *every* scrape (not only when the
@@ -986,17 +1020,24 @@ async function processProductUrl(browser, url, source, productRunState) {
   let isNewProduct;
   let previousPrice;
   let previousCurrency;
+  let previousPriceType;
   let existingRowId;
   if (existing) {
-    ({ isNewProduct, previousPrice, previousCurrency } = existing);
+    ({ isNewProduct, previousPrice, previousCurrency, previousPriceType } = existing);
     existingRowId = existing.rowId;
   } else {
     const latest = await fetchLatestRecordedPrice(productId);
     isNewProduct = !latest;
     previousPrice = latest?.price ?? null;
     previousCurrency = latest?.currency ?? null;
+    previousPriceType = previousPriceTypeOf(latest);
     existingRowId = latest && isSameUtcCalendarDay(latest.scraped_at, nowIso) ? latest.id : null;
   }
+
+  // Read off the page, then refined against this product's own history.
+  const priceType = applyRemarkdown(extracted.priceType, previousPriceType, (msg) =>
+    console.log(`[${source.id}] [${productId}] ${msg}`)
+  );
 
   const category = categorizeProduct(source.brand, extracted.name);
   const eventType = classifyEventType({
@@ -1017,7 +1058,7 @@ async function processProductUrl(browser, url, source, productRunState) {
     price: extracted.price,
     list_price: extracted.listPrice ?? null,
     currency: extracted.currency,
-    price_type: extracted.priceType ?? null,
+    price_type: priceType ?? null,
     stock_status: extracted.stockStatus ?? null,
     in_stock_size_count: extracted.inStockSizeCount ?? null,
     limited_price_end_date: extracted.limitedPriceEndDate ?? null,
@@ -1045,6 +1086,10 @@ async function processProductUrl(browser, url, source, productRunState) {
     isNewProduct,
     previousPrice,
     previousCurrency,
+    // The *pre-run* type, deliberately — not the one just written — so a
+    // later occurrence of the same product this run compares against the same
+    // baseline the first one did (see the note above processProductUrl).
+    previousPriceType,
   });
 
   const priceChanged = isNewProduct || previousPrice !== extracted.price || previousCurrency !== extracted.currency;
