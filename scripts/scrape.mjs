@@ -311,20 +311,105 @@ function withLimitedPriceEndDateFallback(result, html, log) {
   return { ...result, limitedPriceEndDate: extractLimitedPriceEndDateFromText(html, log) };
 }
 
-function extractPriceFromRenderedHtml(html, log = () => {}) {
+// Extracts plausible variant-identifying tokens from a product URL: every
+// query-string value (colorDisplayCode, sizeDisplayCode, etc. — the exact
+// param names vary by site/brand and aren't worth hardcoding) plus any path
+// segment after "/products/<code>" (some product pages encode the variant
+// there instead of, or in addition to, query params). Short tokens are
+// dropped since they're too likely to false-positive match unrelated JSON
+// fields elsewhere in a variant object.
+function variantTokensFromUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return [];
+  }
+  const tokens = new Set();
+  for (const value of parsed.searchParams.values()) {
+    if (value.length >= 2) tokens.add(value);
+  }
+  const pathMatch = parsed.pathname.match(/\/products\/[A-Za-z0-9-]+(\/.*)?$/);
+  if (pathMatch?.[1]) {
+    for (const segment of pathMatch[1].split('/').filter(Boolean)) {
+      if (segment.length >= 2) tokens.add(segment);
+    }
+  }
+  return [...tokens];
+}
+
+// Best-effort: among a ProductGroup's hasVariant entries, find the one that
+// actually corresponds to the requested URL, by looking for its identifying
+// tokens (see variantTokensFromUrl) inside that variant's own serialized
+// JSON-LD — schema.org doesn't fix which field (sku, url, gtin13, color, ...)
+// carries the color/size code, so this searches the whole object rather than
+// a hardcoded field name. Requires *every* token to be present (not just
+// any one): a size code alone is typically shared across every color, so
+// matching on that in isolation would happily "match" the wrong color's
+// variant as long as it has the right size — only a variant carrying the
+// full combination (e.g. both color AND size code) is treated as identified.
+// Returns null (never a guess) when no variant satisfies all tokens, so the
+// caller can fall back to its own explicit default instead of silently
+// trusting a coincidental partial match.
+function findMatchingVariant(hasVariant, url) {
+  const tokens = variantTokensFromUrl(url);
+  if (tokens.length === 0) return null;
+  return (
+    hasVariant.find((variant) => {
+      if (!variant) return false;
+      const haystack = JSON.stringify(variant);
+      return tokens.every((token) => haystack.includes(token));
+    }) ?? null
+  );
+}
+
+function extractPriceFromRenderedHtml(html, url, log = () => {}) {
   const products = parseJsonLdProducts(html, log);
   log(`extractPriceFromRenderedHtml: ${products.length} Product/ProductGroup candidate(s) from JSON-LD`);
 
   for (const [i, product] of products.entries()) {
     log(`  candidate #${i} (@type=${JSON.stringify(product['@type'])}):`);
+    // name is taken from this SAME candidate the price is about to come from
+    // (falling back to the containing product's own name for a variant that
+    // doesn't carry its own) — a page can legitimately have more than one
+    // Product/ProductGroup JSON-LD block (e.g. a "related products" widget
+    // also emits one for SEO), and independently re-scanning parseJsonLdProducts()
+    // for "the first entry with a .name" would risk returning a name from a
+    // *different* block than the one the price was actually taken from.
     const direct = extractPriceFromOffers(product.offers, log, `candidate #${i} .offers`);
-    if (direct) return withLimitedPriceEndDateFallback(direct, html, log);
+    if (direct) return withLimitedPriceEndDateFallback({ ...direct, name: product.name ?? null }, html, log);
 
     if (Array.isArray(product.hasVariant)) {
       log(`  candidate #${i}: checking ${product.hasVariant.length} hasVariant entries`);
+
+      // A ProductGroup's root .offers (checked above) is often absent, in
+      // which case the color/size actually requested by `url` only exists
+      // inside one specific hasVariant entry. Try to find *that* entry
+      // first — otherwise the loop below just takes whichever variant
+      // happens to be array index 0, which silently returns a real price
+      // for the WRONG color/size whenever that isn't the one being viewed
+      // (e.g. a wide-leg cargo pants page where one colorway has its own
+      // clearance markdown and others don't).
+      const matched = findMatchingVariant(product.hasVariant, url);
+      if (matched) {
+        log(`  candidate #${i}: matched a hasVariant entry to the requested URL (shared identifying token)`);
+        const matchedPrice = extractPriceFromOffers(matched.offers, log, `candidate #${i} .hasVariant[matched].offers`);
+        if (matchedPrice) {
+          return withLimitedPriceEndDateFallback({ ...matchedPrice, name: matched.name ?? product.name ?? null }, html, log);
+        }
+        log(`  candidate #${i}: matched variant had no usable price, falling back to first-available`);
+      } else {
+        log(
+          `  candidate #${i}: could not match any hasVariant entry to the requested URL — falling back to the ` +
+            `first variant with a usable price, which may not be the color/size this URL actually shows`
+        );
+      }
+
       for (const [v, variant] of product.hasVariant.entries()) {
         const variantPrice = extractPriceFromOffers(variant?.offers, log, `candidate #${i} .hasVariant[${v}].offers`);
-        if (variantPrice) return withLimitedPriceEndDateFallback(variantPrice, html, log);
+        if (variantPrice) {
+          return withLimitedPriceEndDateFallback({ ...variantPrice, name: variant?.name ?? product.name ?? null }, html, log);
+        }
       }
     } else {
       log(`  candidate #${i}: no hasVariant array`);
@@ -441,7 +526,7 @@ async function renderAndExtract(browser, url, { log = () => {}, renderOptions = 
     );
 
     log('--- price extraction from rendered HTML (JSON-LD / meta / __NEXT_DATA__) ---');
-    let result = extractPriceFromRenderedHtml(renderedHtml, log);
+    let result = extractPriceFromRenderedHtml(renderedHtml, url, log);
     if (!result) {
       log(`--- rendered HTML gave nothing, trying ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
       for (const { url: responseUrl, body } of candidateJsonResponses) {
@@ -459,7 +544,12 @@ async function renderAndExtract(browser, url, { log = () => {}, renderOptions = 
       return null;
     }
 
-    const name = extractNameFromRenderedHtml(renderedHtml);
+    // Prefer the name captured from the exact same JSON-LD candidate as the
+    // price (see extractPriceFromRenderedHtml); only fall back to an
+    // independent og:title/<title> scan when the price came from a path
+    // that has no associated name of its own (meta tag / __NEXT_DATA__ /
+    // sniffed JSON response).
+    const name = result.name ?? extractNameFromRenderedHtml(renderedHtml);
     log(
       `extraction SUCCEEDED: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}, ` +
         `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate ?? null)}`
@@ -720,7 +810,7 @@ async function debugSingleProduct(browser, url) {
   };
 
   trace('--- price extraction from rendered HTML (JSON-LD / meta / __NEXT_DATA__) ---');
-  let result = extractPriceFromRenderedHtml(html, trace);
+  let result = extractPriceFromRenderedHtml(html, url, trace);
   if (!result) {
     trace(`--- rendered HTML gave nothing, trying ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
     for (const { url: responseUrl, body } of candidateJsonResponses) {
@@ -734,7 +824,7 @@ async function debugSingleProduct(browser, url) {
   }
 
   if (result) {
-    const name = extractNameFromRenderedHtml(html);
+    const name = result.name ?? extractNameFromRenderedHtml(html);
     trace(
       `RESULT: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}, ` +
         `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate ?? null)}`
