@@ -792,6 +792,35 @@ function collectPriceCandidates(obj, { path = '$', depth = 0, out = [], limit = 
   return out;
 }
 
+// Compact structural view of a JSON payload: which keys exist at each level,
+// with one sample child expanded for maps keyed by opaque ids (the price map
+// is keyed by SKU-level l2Id, so every entry has the same shape and dumping
+// all of them says nothing extra). Used to work out how a price API actually
+// nests its member/promo prices before writing an extractor against it.
+function describeJsonShape(value, { path = '$', depth = 0, maxDepth = 5, out = [], limit = 80 } = {}) {
+  if (out.length >= limit) return out;
+  if (Array.isArray(value)) {
+    out.push(`${path}: array(${value.length})`);
+    if (value.length > 0 && depth < maxDepth) {
+      describeJsonShape(value[0], { path: `${path}[0]`, depth: depth + 1, maxDepth, out, limit });
+    }
+    return out;
+  }
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value);
+    out.push(`${path}: object{${keys.slice(0, 25).join(', ')}${keys.length > 25 ? `, …+${keys.length - 25}` : ''}}`);
+    if (depth < maxDepth) {
+      const sampleKeys = keys.length > 6 ? keys.slice(0, 1) : keys;
+      for (const key of sampleKeys) {
+        describeJsonShape(value[key], { path: `${path}.${key}`, depth: depth + 1, maxDepth, out, limit });
+      }
+    }
+    return out;
+  }
+  out.push(`${path}: ${JSON.stringify(value)}`);
+  return out;
+}
+
 // Pulls the human-visible "¥1,234" strings out of the rendered DOM along
 // with the words around them, so the trace shows what a shopper actually
 // sees on the page ("期間限定価格 ¥2,990" / "通常価格 ¥3,990") right next to
@@ -938,13 +967,20 @@ async function debugSingleProduct(browser, url, outDir, { via = 'direct' } = {})
   if (jsonLdProducts.length === 0) trace('  (none)');
   jsonLdProducts.forEach((product, i) => summarizeJsonLdProduct(product, i, trace));
 
-  trace(`--- price-shaped fields in the ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
-  for (const { url: responseUrl, body } of candidateJsonResponses) {
-    const candidates = collectPriceCandidates(body);
-    if (candidates.length === 0) continue;
+  // Only responses whose own URL carries this product's code can be about
+  // this product — a recommendation/cross-sell widget's payload is full of
+  // other products' prices and would only add noise here.
+  const ownResponses = productCode ? candidateJsonResponses.filter((r) => r.url.includes(productCode)) : [];
+  trace(
+    `--- ${ownResponses.length} of the ${candidateJsonResponses.length} sniffed JSON response(s) mention ` +
+      `the product code "${productCode}" ---`
+  );
+  for (const { url: responseUrl, body } of ownResponses) {
     trace(`  ${responseUrl}`);
-    for (const { path: fieldPath, value } of candidates.slice(0, 40)) trace(`    ${fieldPath} = ${value}`);
-    if (candidates.length > 40) trace(`    ... ${candidates.length - 40} more price-shaped field(s) not printed`);
+    for (const line of describeJsonShape(body)) trace(`    shape ${line}`);
+    const candidates = collectPriceCandidates(body);
+    for (const { path: fieldPath, value } of candidates.slice(0, 24)) trace(`    ${fieldPath} = ${value}`);
+    if (candidates.length > 24) trace(`    ... ${candidates.length - 24} more price-shaped field(s) not printed`);
   }
 
   trace('--- price extraction from rendered HTML (JSON-LD / meta / __NEXT_DATA__) ---');
