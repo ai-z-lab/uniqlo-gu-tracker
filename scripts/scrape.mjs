@@ -628,9 +628,20 @@ function extractPriceFromPriceApiBody(body, url, jsonLdPrice, log = () => {}, so
   }
 
   let best = null;
+  // The regular price to show a discount against. `guest.base` is what a
+  // non-member pays before any app-member price applies, so it is the only
+  // node that means "list price"; the highest one across the selected SKUs
+  // is taken so a partially-discounted colour still reports the undiscounted
+  // amount. Note both brands' payloads are requested with
+  // includePreviousPrice=false, so this is NOT the pre-markdown price — for a
+  // product that is simply marked down (UNIQLO 期間限定価格 included) base and
+  // promo are equal and there is no discount to show. It is the GU
+  // アプリ会員特別価格 case where the two genuinely differ.
+  let listPrice = null;
   for (const l2 of selected) {
     for (const value of priceValuesFromPriceEntry(prices[l2?.l2Id])) {
       if (!best || value.price < best.price) best = { ...value, l2Id: l2?.l2Id };
+      if (value.label === 'guest.base' && (listPrice == null || value.price > listPrice)) listPrice = value.price;
     }
   }
 
@@ -638,8 +649,41 @@ function extractPriceFromPriceApiBody(body, url, jsonLdPrice, log = () => {}, so
     log(`    ${source}: no usable price among ${selected.length} l2s entry/entries`);
     return null;
   }
-  log(`    ${source}: lowest purchasable price is ${best.price} ${best.currency} (${best.label} of l2Id ${best.l2Id})`);
-  return { price: best.price, currency: best.currency };
+
+  const stock = stockAcrossEntries(body.result.stocks, selected);
+  log(
+    `    ${source}: lowest purchasable price is ${best.price} ${best.currency} (${best.label} of l2Id ${best.l2Id}), ` +
+      `list price ${listPrice ?? 'unknown'}, stock ${stock.status} (${stock.inStockCount}/${selected.length} SKU in stock)`
+  );
+  return {
+    price: best.price,
+    currency: best.currency,
+    listPrice,
+    priceLabel: best.label,
+    stockStatus: stock.status,
+    inStockSizeCount: stock.inStockCount,
+  };
+}
+
+// Stock for the SKUs we selected, from the `result.stocks` map that rides
+// along in the same price API response (keyed by l2Id, like result.prices).
+// Two things are recorded: whether the product is buyable at all in the
+// colour the URL is showing — so the dashboard can stop advertising a price
+// nobody can act on — and how many sizes are left, which is the signal worth
+// having later, since a 通常値下げ runs "until it sells out" and a thinning
+// size run is what precedes the next markdown.
+function stockAcrossEntries(stocks, selected) {
+  if (!stocks || typeof stocks !== 'object') return { status: null, inStockCount: null };
+  let known = 0;
+  let inStockCount = 0;
+  for (const l2 of selected) {
+    const statusCode = stocks[l2?.l2Id]?.statusCode;
+    if (typeof statusCode !== 'string' || statusCode === '') continue;
+    known++;
+    if (statusCode !== 'STOCK_OUT') inStockCount++;
+  }
+  if (known === 0) return { status: null, inStockCount: null };
+  return { status: inStockCount > 0 ? 'in_stock' : 'stock_out', inStockCount };
 }
 
 // Scans the JSON responses the page fetched for the price API above. Only
@@ -672,9 +716,12 @@ function extractPriceFromPriceApiResponses(responses, url, jsonLdPrice, log = ()
 function extractPriceAndName(html, url, candidateJsonResponses, log = () => {}) {
   log('--- price extraction from rendered HTML (JSON-LD / meta / __NEXT_DATA__) ---');
   let result = extractPriceFromRenderedHtml(html, url, log);
+  // Kept separately because `result.price` is overwritten below when the API
+  // undercuts it, and the pre-API figure is the list price we want to report.
+  const jsonLdPrice = result?.price ?? null;
 
   log(`--- brand price API, across ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
-  const apiPrice = extractPriceFromPriceApiResponses(candidateJsonResponses, url, result?.price ?? null, log);
+  const apiPrice = extractPriceFromPriceApiResponses(candidateJsonResponses, url, jsonLdPrice, log);
   if (apiPrice && (!result || apiPrice.price < result.price)) {
     log(
       `  price API price ${apiPrice.price} is lower than ` +
@@ -711,11 +758,50 @@ function extractPriceAndName(html, url, candidateJsonResponses, log = () => {}) 
   // independent og:title/<title> scan when the price came from a path that
   // has no associated name of its own.
   const name = result.name ?? extractNameFromRenderedHtml(html);
+
+  // The regular price this one is discounted from, so a row can say "¥3,990
+  // → ¥2,990" rather than only the amount paid. Two independent readings of
+  // it exist — the JSON-LD variant's own price and the price API's
+  // guest.base — and the higher wins, since a discount is only understated,
+  // never overstated, by taking the larger reference. Left null when neither
+  // is above the price actually recorded: there is then no discount to show,
+  // which is the honest answer rather than a 0% one.
+  const listPriceCandidates = [jsonLdPrice, apiPrice?.listPrice].filter((value) => value != null);
+  const listPrice = listPriceCandidates.length > 0 ? Math.max(...listPriceCandidates) : null;
+
+  // What kind of price this is, read off the page's own data instead of
+  // inferred from which listing page the product turned up on (which is all
+  // event_type has ever known). 'member' is claimed only when the API price
+  // actually won *and* came from a member node — if the member price merely
+  // ties the guest one there is no member discount to speak of.
+  const usedApiPrice = apiPrice != null && result.price === apiPrice.price && apiPrice.price < (jsonLdPrice ?? Infinity);
+  let priceType;
+  if (usedApiPrice && apiPrice.priceLabel?.startsWith('member.')) priceType = 'member';
+  else if (result.limitedPriceEndDate) priceType = 'limited';
+  else priceType = 'markdown';
+
+  log(
+    `resolved: price=${result.price}, listPrice=${listPrice ?? 'null'}, priceType=${priceType}, ` +
+      `stock=${apiPrice?.stockStatus ?? 'unknown'} (${apiPrice?.inStockSizeCount ?? '?'} size(s) in stock)`
+  );
+
   return {
     price: result.price,
     currency: result.currency,
     name,
     limitedPriceEndDate: result.limitedPriceEndDate ?? null,
+    // Recorded whenever it is known, even when it equals the price paid.
+    // "There is no member discount today" is itself a fact worth keeping —
+    // nulling it would make a full-price observation indistinguishable from
+    // one where the guest price could not be read at all. Deciding whether a
+    // discount exists is then the reader's job: it does, exactly when
+    // list_price > price.
+    listPrice,
+    priceType,
+    // Stock is independent of which price won, so it is taken from the API
+    // response whenever there was one — including when its price lost.
+    stockStatus: apiPrice?.stockStatus ?? null,
+    inStockSizeCount: apiPrice?.inStockSizeCount ?? null,
   };
 }
 
@@ -823,7 +909,7 @@ async function renderAndExtract(browser, url, { log = () => {}, renderOptions = 
 async function fetchLatestRecordedPrice(productId) {
   const { data, error } = await supabase
     .from('price_events')
-    .select('id, price, currency, scraped_at')
+    .select('id, price, currency, price_type, limited_price_end_date, scraped_at')
     .eq('product_id', productId)
     .order('scraped_at', { ascending: false })
     .limit(1);
@@ -838,6 +924,35 @@ async function fetchLatestRecordedPrice(productId) {
 // for no real reason.
 function isSameUtcCalendarDay(isoA, isoB) {
   return isoA.slice(0, 10) === isoB.slice(0, 10);
+}
+
+// 再値下げ — a 期間限定価格 stacked on top of a product that was *already*
+// permanently marked down — is the one price "型" the product page cannot
+// tell you about. The page shows today's price and today's flags; that this
+// same product sat at a plain 値下げ price last week exists only in our own
+// history. So unlike member/limited/markdown, which are read straight off the
+// page, this one is decided by comparing against the previous recorded row.
+//
+// It refines 'limited' only. A GU アプリ会員特別価格 is a different mechanism
+// (a membership price, not a further markdown), and 再値下げ as the reference
+// material defines it is specifically 通常値下げ→期間限定価格, so 'member' is
+// left alone rather than being overwritten and losing that distinction.
+//
+// Rows written before price_type existed still carry limited_price_end_date,
+// which is enough to tell whether that observation was a period-limited price
+// — so the check works against history already in the table instead of
+// needing two fresh scrapes to become useful.
+function previousPriceTypeOf(latest) {
+  if (!latest) return null;
+  if (latest.price_type) return latest.price_type;
+  return latest.limited_price_end_date ? 'limited' : 'markdown';
+}
+
+function applyRemarkdown(priceType, previousPriceType, log = () => {}) {
+  if (priceType !== 'limited') return priceType;
+  if (previousPriceType !== 'markdown' && previousPriceType !== 'remarkdown') return priceType;
+  log(`price type refined to 'remarkdown' (previous observation was '${previousPriceType}')`);
+  return 'remarkdown';
 }
 
 // Records one observation per product on *every* scrape (not only when the
@@ -905,17 +1020,24 @@ async function processProductUrl(browser, url, source, productRunState) {
   let isNewProduct;
   let previousPrice;
   let previousCurrency;
+  let previousPriceType;
   let existingRowId;
   if (existing) {
-    ({ isNewProduct, previousPrice, previousCurrency } = existing);
+    ({ isNewProduct, previousPrice, previousCurrency, previousPriceType } = existing);
     existingRowId = existing.rowId;
   } else {
     const latest = await fetchLatestRecordedPrice(productId);
     isNewProduct = !latest;
     previousPrice = latest?.price ?? null;
     previousCurrency = latest?.currency ?? null;
+    previousPriceType = previousPriceTypeOf(latest);
     existingRowId = latest && isSameUtcCalendarDay(latest.scraped_at, nowIso) ? latest.id : null;
   }
+
+  // Read off the page, then refined against this product's own history.
+  const priceType = applyRemarkdown(extracted.priceType, previousPriceType, (msg) =>
+    console.log(`[${source.id}] [${productId}] ${msg}`)
+  );
 
   const category = categorizeProduct(source.brand, extracted.name);
   const eventType = classifyEventType({
@@ -934,7 +1056,11 @@ async function processProductUrl(browser, url, source, productRunState) {
     event_type: eventType,
     url,
     price: extracted.price,
+    list_price: extracted.listPrice ?? null,
     currency: extracted.currency,
+    price_type: priceType ?? null,
+    stock_status: extracted.stockStatus ?? null,
+    in_stock_size_count: extracted.inStockSizeCount ?? null,
     limited_price_end_date: extracted.limitedPriceEndDate ?? null,
     scraped_at: nowIso,
   };
@@ -960,6 +1086,10 @@ async function processProductUrl(browser, url, source, productRunState) {
     isNewProduct,
     previousPrice,
     previousCurrency,
+    // The *pre-run* type, deliberately — not the one just written — so a
+    // later occurrence of the same product this run compares against the same
+    // baseline the first one did (see the note above processProductUrl).
+    previousPriceType,
   });
 
   const priceChanged = isNewProduct || previousPrice !== extracted.price || previousCurrency !== extracted.currency;
@@ -1241,9 +1371,15 @@ async function debugSingleProduct(browser, url, outDir, { via = 'direct' } = {})
   // reflects what a real run would record rather than a parallel reading of
   // the same page.
   const result = extractPriceAndName(html, url, candidateJsonResponses, trace);
+  // The summary line carries every field that ends up in the price_events
+  // row, so a debug run can be checked against the site at a glance without
+  // digging back into each product's own trace.
   const summary = result
-    ? `RESULT: price=${result.price} ${result.currency}, name=${JSON.stringify(result.name)}, ` +
-      `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate)}`
+    ? `RESULT: price=${result.price} ${result.currency}` +
+      ` (list ${result.listPrice ?? 'n/a'}, ${result.priceType}),` +
+      ` stock=${result.stockStatus ?? 'unknown'} ${result.inStockSizeCount ?? '?'} size(s),` +
+      ` name=${JSON.stringify(result.name)},` +
+      ` limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate)}`
     : 'RESULT: no price found via any strategy';
   trace(summary);
 
