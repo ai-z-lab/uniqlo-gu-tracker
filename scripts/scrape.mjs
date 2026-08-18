@@ -253,27 +253,51 @@ function parsePriceValidUntil(value) {
   return date.toISOString().slice(0, 10);
 }
 
+// A single Offer, or an ARRAY of them — UNIQLO/GU product pages can list
+// more than one Offer for the same item (observed: a regular price and a
+// lower "アプリ会員特別価格"/period-limited member price as separate Offer
+// entries). Scans *every* offer and keeps the lowest valid price rather than
+// stopping at the first one found — taking "whichever offer happens to be
+// first in the array" previously meant the reported price depended on array
+// order, not on which price a shopper would actually pay, and could surface
+// the higher regular price instead of the actual current lowest one. This
+// matches the rest of the tracker's philosophy of always recording the
+// lowest currently-available price (see the cross-source dedup in
+// processProductUrl).
 function extractPriceFromOffers(offersLike, log = () => {}, source = 'offers') {
   if (!offersLike) {
     log(`    ${source}: absent`);
     return null;
   }
   const offers = Array.isArray(offersLike) ? offersLike : [offersLike];
+  let best = null;
   for (const [i, offer] of offers.entries()) {
     if (!offer) continue;
     const price = offer.price ?? offer.lowPrice;
-    if (price != null && !Number.isNaN(Number(price))) {
-      const priceValidUntil = parsePriceValidUntil(offer.priceValidUntil);
-      log(
-        `    ${source}[${i}]: price=${JSON.stringify(price)} (type ${typeof price}), ` +
-          `priceValidUntil=${JSON.stringify(offer.priceValidUntil ?? null)} -> using price` +
-          (priceValidUntil ? ` (end date ${priceValidUntil})` : '')
-      );
-      return { price: Number(price), currency: offer.priceCurrency || 'JPY', limitedPriceEndDate: priceValidUntil };
+    const numeric = price != null ? Number(price) : NaN;
+    // Reject non-positive/absurd values the same way findPriceInObject does,
+    // so a $0 "問い合わせ" placeholder offer can't win by virtue of being
+    // numerically the lowest.
+    if (Number.isNaN(numeric) || numeric <= 0 || numeric >= 1_000_000) {
+      log(`    ${source}[${i}]: no usable price field (keys: ${Object.keys(offer).join(', ')})`);
+      continue;
     }
-    log(`    ${source}[${i}]: no usable price field (keys: ${Object.keys(offer).join(', ')})`);
+    const priceValidUntil = parsePriceValidUntil(offer.priceValidUntil);
+    log(
+      `    ${source}[${i}]: price=${JSON.stringify(price)} (type ${typeof price}), ` +
+        `priceValidUntil=${JSON.stringify(offer.priceValidUntil ?? null)}` +
+        (priceValidUntil ? ` (end date ${priceValidUntil})` : '')
+    );
+    if (!best || numeric < best.price) {
+      best = { price: numeric, currency: offer.priceCurrency || 'JPY', limitedPriceEndDate: priceValidUntil };
+    }
   }
-  return null;
+  if (best) {
+    log(`    ${source}: using lowest of ${offers.length} offer(s): ${best.price} ${best.currency}`);
+  } else {
+    log(`    ${source}: no usable price found among ${offers.length} offer(s)`);
+  }
+  return best;
 }
 
 // Fallback when JSON-LD has no priceValidUntil at all: look for a Japanese
