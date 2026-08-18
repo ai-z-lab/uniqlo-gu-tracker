@@ -11,11 +11,17 @@
 // on a schedule (needs full internet access and a headless browser, so it
 // must run in GitHub Actions rather than locally in a sandboxed shell).
 //
-// Debugging a single product: set DEBUG_URL to a product page URL and run
-// this script. Instead of the normal sources.json loop, it renders just
-// that one page and writes debug-output/page.html, debug-output/screenshot.png,
-// and debug-output/responses.json (captured JSON network responses) so the
-// actual DOM/API shape can be inspected without guessing.
+// Debugging: set DEBUG_URL and run this script. Instead of the normal
+// sources.json loop it renders just those pages and writes, per product,
+// debug-output/page.html, screenshot.png, responses.json (captured JSON
+// network responses) and extraction-trace.txt, so the actual DOM/API shape
+// and every extraction decision can be inspected without guessing.
+// DEBUG_URL takes one or more comma/whitespace-separated URLs, and each may
+// be either a product page or a listing page (値下げ/期間限定価格一覧) — a
+// listing is expanded into the first N products linked from it (N from a
+// "sample=N" token anywhere in DEBUG_URL, or the DEBUG_SAMPLE env var,
+// default 3), which is how "found on the 期間限定 listing but extracted the
+// regular price" bugs get caught.
 
 import { createClient } from '@supabase/supabase-js';
 import { chromium } from 'playwright';
@@ -756,10 +762,93 @@ async function processSource(browser, source, productRunState) {
   return { discovered: productUrls.length, recorded, priceChanged, skipped, failed };
 }
 
-// --- Debug mode: render exactly one product and dump what we saw ---
+// --- Debug mode: render one or more products and dump what we saw ---
 
-async function debugSingleProduct(browser, url) {
-  const outDir = path.join(SCRIPT_DIR, '..', 'debug-output');
+// Every key that could plausibly hold a JPY amount somewhere in a sniffed
+// API payload. Deliberately much wider than the extractor's own accepted
+// key list: the point of the debug dump is to reveal fields the extractor
+// does NOT yet know about (a promo/member price sitting next to the base
+// price, say), so it must not be filtered by the extractor's assumptions.
+const DEBUG_PRICE_KEY_RE = /(price|amount|value|base|promo|discount|sale|list|original|member|app|limited)/i;
+
+function collectPriceCandidates(obj, { path = '$', depth = 0, out = [], limit = 300 } = {}) {
+  if (out.length >= limit || obj == null || depth > 12) return out;
+  if (Array.isArray(obj)) {
+    obj.forEach((value, i) => collectPriceCandidates(value, { path: `${path}[${i}]`, depth: depth + 1, out, limit }));
+    return out;
+  }
+  if (typeof obj !== 'object') return out;
+  for (const [key, value] of Object.entries(obj)) {
+    if (out.length >= limit) break;
+    const childPath = `${path}.${key}`;
+    const numeric =
+      typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+    if (DEBUG_PRICE_KEY_RE.test(key) && !Number.isNaN(numeric) && numeric > 0 && numeric < 1_000_000) {
+      out.push({ path: childPath, value: numeric });
+    } else if (value && typeof value === 'object') {
+      collectPriceCandidates(value, { path: childPath, depth: depth + 1, out, limit });
+    }
+  }
+  return out;
+}
+
+// Pulls the human-visible "¥1,234" strings out of the rendered DOM along
+// with the words around them, so the trace shows what a shopper actually
+// sees on the page ("期間限定価格 ¥2,990" / "通常価格 ¥3,990") right next to
+// what the extractor picked. Without this, deciding whether an extracted
+// number is the right one means trusting the artifact HTML by eye.
+function extractPriceTextSnippets(html, limit = 15) {
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&yen;/gi, '¥')
+    .replace(/\s+/g, ' ');
+  const snippets = [];
+  const seen = new Set();
+  const re = /[¥￥]\s?[\d,]{3,9}/g;
+  let match;
+  while ((match = re.exec(text)) && snippets.length < limit) {
+    const start = Math.max(0, match.index - 40);
+    const snippet = text.slice(start, match.index + match[0].length + 20).trim();
+    if (seen.has(snippet)) continue;
+    seen.add(snippet);
+    snippets.push(snippet);
+  }
+  return snippets;
+}
+
+// Condensed structural view of one JSON-LD Product/ProductGroup: enough to
+// see how many offers/variants there are and every price they carry,
+// without printing a hasVariant array with hundreds of entries into the
+// CI log.
+function summarizeJsonLdProduct(product, index, trace) {
+  trace(`  jsonld[#${index}] @type=${JSON.stringify(product['@type'])} name=${JSON.stringify(product.name ?? null)}`);
+  const offers = product.offers ? (Array.isArray(product.offers) ? product.offers : [product.offers]) : [];
+  trace(`    .offers: ${offers.length} entry/entries`);
+  offers.slice(0, 10).forEach((offer, i) => {
+    trace(`      offers[${i}] = ${JSON.stringify(offer)}`);
+  });
+  if (offers.length > 10) trace(`      ... ${offers.length - 10} more offer(s) not printed`);
+
+  const variants = Array.isArray(product.hasVariant) ? product.hasVariant : [];
+  trace(`    .hasVariant: ${variants.length} entry/entries`);
+  variants.slice(0, 5).forEach((variant, v) => {
+    const variantOffers = variant?.offers
+      ? Array.isArray(variant.offers)
+        ? variant.offers
+        : [variant.offers]
+      : [];
+    trace(
+      `      hasVariant[${v}] name=${JSON.stringify(variant?.name ?? null)} sku=${JSON.stringify(variant?.sku ?? null)} ` +
+        `offers=${JSON.stringify(variantOffers)}`
+    );
+  });
+  if (variants.length > 5) trace(`      ... ${variants.length - 5} more variant(s) not printed`);
+}
+
+async function debugSingleProduct(browser, url, outDir, { via = 'direct' } = {}) {
   await mkdir(outDir, { recursive: true });
 
   const log = (msg) => console.log(`[debug] ${msg}`);
@@ -769,7 +858,7 @@ async function debugSingleProduct(browser, url) {
   const page = await context.newPage();
   const candidateJsonResponses = [];
 
-  log(`navigating to ${url}`);
+  log(`navigating to ${url} (discovered via ${via})`);
 
   // A per-step nav timeout of 15s, as requested, with a slightly larger
   // outer ceiling as a second line of defense — every step below (goto,
@@ -783,11 +872,11 @@ async function debugSingleProduct(browser, url) {
     html = await withTimeout(
       collectRenderedPage(page, url, productCode, candidateJsonResponses, {
         navTimeoutMs: DEBUG_NAV_TIMEOUT_MS,
-        settleMs: 2_000,
+        settleMs: 3_500,
         onlyMatchingProductCode: false,
         log,
       }),
-      DEBUG_NAV_TIMEOUT_MS + 5_000,
+      DEBUG_NAV_TIMEOUT_MS + 8_000,
       url
     );
   } catch (err) {
@@ -833,6 +922,31 @@ async function debugSingleProduct(browser, url) {
     log(`[extract] ${msg}`);
   };
 
+  trace(`=== ${url}`);
+  trace(`discovered via: ${via}`);
+
+  // Everything below the extraction trace proper is raw evidence, printed
+  // *before* the extractor's own decisions so a wrong answer can be
+  // compared against what was actually on the page.
+  trace('--- prices visible in the rendered DOM text ---');
+  const snippets = extractPriceTextSnippets(html);
+  if (snippets.length === 0) trace('  (no "¥N,NNN" text found in the rendered DOM)');
+  for (const snippet of snippets) trace(`  ${snippet}`);
+
+  trace('--- JSON-LD Product/ProductGroup blocks ---');
+  const jsonLdProducts = parseJsonLdProducts(html);
+  if (jsonLdProducts.length === 0) trace('  (none)');
+  jsonLdProducts.forEach((product, i) => summarizeJsonLdProduct(product, i, trace));
+
+  trace(`--- price-shaped fields in the ${candidateJsonResponses.length} sniffed JSON response(s) ---`);
+  for (const { url: responseUrl, body } of candidateJsonResponses) {
+    const candidates = collectPriceCandidates(body);
+    if (candidates.length === 0) continue;
+    trace(`  ${responseUrl}`);
+    for (const { path: fieldPath, value } of candidates.slice(0, 40)) trace(`    ${fieldPath} = ${value}`);
+    if (candidates.length > 40) trace(`    ... ${candidates.length - 40} more price-shaped field(s) not printed`);
+  }
+
   trace('--- price extraction from rendered HTML (JSON-LD / meta / __NEXT_DATA__) ---');
   let result = extractPriceFromRenderedHtml(html, url, trace);
   if (!result) {
@@ -847,22 +961,104 @@ async function debugSingleProduct(browser, url) {
     }
   }
 
+  let summary;
   if (result) {
     const name = result.name ?? extractNameFromRenderedHtml(html);
-    trace(
+    summary =
       `RESULT: price=${result.price} ${result.currency}, name=${JSON.stringify(name)}, ` +
-        `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate ?? null)}`
-    );
+      `limitedPriceEndDate=${JSON.stringify(result.limitedPriceEndDate ?? null)}`;
   } else {
-    trace('RESULT: no price found via any strategy');
+    summary = 'RESULT: no price found via any strategy';
   }
+  trace(summary);
 
   await writeFile(path.join(outDir, 'extraction-trace.txt'), traceLines.join('\n'), 'utf-8');
   log('wrote extraction-trace.txt');
 
   await closeContextSafely(context, log);
+
+  return { url, via, summary, domPrices: snippets };
 }
 
+// DEBUG_URL accepts more than one target, separated by commas/whitespace,
+// and each target may be either a product page URL or a *listing* page
+// (値下げ/期間限定価格一覧). Listing pages are expanded into their first N
+// products: the interesting extraction bugs are exactly the "found on the
+// 期間限定 listing but extracted the regular price" kind, which can only be
+// caught by starting from the listing the real scraper starts from, rather
+// than from a URL picked by hand.
+//
+// N comes from a bare "sample=N" token inside DEBUG_URL itself (or the
+// DEBUG_SAMPLE env var). It rides along in DEBUG_URL rather than being its
+// own workflow input because the scrape workflow only forwards debug_url,
+// and adding an input there would mean editing .github/workflows/, which
+// needs a token scope this project's automation does not have.
+async function resolveDebugTargets(raw) {
+  const tokens = raw.split(/[\s,]+/).map((entry) => entry.trim()).filter(Boolean);
+  const sampleToken = tokens.find((token) => /^sample=\d+$/.test(token));
+  const entries = tokens.filter((token) => token !== sampleToken);
+  const sampleRaw = sampleToken ? sampleToken.slice('sample='.length) : process.env.DEBUG_SAMPLE;
+  const sample = Number(sampleRaw) > 0 ? Number(sampleRaw) : 3;
+  const targets = [];
+
+  for (const entry of entries) {
+    if (/\/products\//.test(entry)) {
+      targets.push({ url: entry, via: 'direct' });
+      continue;
+    }
+    try {
+      const html = await fetchHtml(entry);
+      const links = extractProductLinks(html, entry);
+      console.log(`[debug] listing ${entry}: discovered ${links.length} product link(s), sampling first ${sample}`);
+      for (const link of links.slice(0, sample)) targets.push({ url: link, via: entry });
+    } catch (err) {
+      console.error(`[debug] failed to expand listing ${entry}: ${err.message}`);
+    }
+    await sleep(REQUEST_DELAY_MS);
+  }
+
+  // The same product can be linked from more than one listing; debugging it
+  // twice would just double the run time.
+  const seen = new Set();
+  return targets.filter((target) => (seen.has(target.url) ? false : (seen.add(target.url), true)));
+}
+
+async function debugProducts(browser, raw) {
+  const rootDir = path.join(SCRIPT_DIR, '..', 'debug-output');
+  await mkdir(rootDir, { recursive: true });
+
+  const targets = await resolveDebugTargets(raw);
+  if (targets.length === 0) {
+    console.error('[debug] no debug targets could be resolved from DEBUG_URL');
+    return;
+  }
+  console.log(`[debug] debugging ${targets.length} product page(s)`);
+
+  const summaries = [];
+  for (const [i, target] of targets.entries()) {
+    const code = (target.url.match(/\/products\/([A-Za-z0-9-]+)/) || [])[1] || 'unknown';
+    // A single target keeps writing straight into debug-output/ so the
+    // existing "look at debug-output/page.html" workflow is unchanged.
+    const outDir = targets.length === 1 ? rootDir : path.join(rootDir, `${String(i + 1).padStart(2, '0')}-${code}`);
+    console.log(`[debug] === (${i + 1}/${targets.length}) ${target.url}`);
+    try {
+      summaries.push(await debugSingleProduct(browser, target.url, outDir, { via: target.via }));
+    } catch (err) {
+      console.error(`[debug] ${target.url} failed: ${err.message}`);
+      summaries.push({ url: target.url, via: target.via, summary: `FAILED: ${err.message}`, domPrices: [] });
+    }
+  }
+
+  const summaryText = summaries
+    .map(
+      (entry) =>
+        `${entry.url}\n  via: ${entry.via}\n  ${entry.summary}\n` +
+        `  DOM prices: ${entry.domPrices.slice(0, 6).join(' | ') || '(none)'}`
+    )
+    .join('\n\n');
+  await writeFile(path.join(rootDir, 'summary.txt'), summaryText, 'utf-8');
+  console.log(`[debug] ===== summary =====\n${summaryText}`);
+}
 async function main() {
   console.log('launching browser');
   const browser = await withTimeout(
@@ -874,7 +1070,7 @@ async function main() {
 
   try {
     if (DEBUG_URL) {
-      await debugSingleProduct(browser, DEBUG_URL);
+      await debugProducts(browser, DEBUG_URL);
       return;
     }
 
