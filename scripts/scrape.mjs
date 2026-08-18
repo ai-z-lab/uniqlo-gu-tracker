@@ -53,7 +53,12 @@ const REQUEST_DELAY_MS = 150;
 // becomes unresponsive, and a page that never reaches "networkidle" (common
 // with sites that keep analytics/polling connections open) must not be
 // allowed to stall the whole run.
-const PRODUCT_TIMEOUT_MS = 12_000;
+// Outer cap for one product. Kept at or above the sum of the individually
+// bounded steps below (goto 7s +2s slack, price API 4s, settle 1s, content
+// read 5s) — set any lower and it fires first on a merely slow page, which
+// would make each of those inner budgets unreachable and turn "the price API
+// was still in flight" into a failed product.
+const PRODUCT_TIMEOUT_MS = 20_000;
 const NAV_TIMEOUT_MS = 7_000;
 const RENDER_SETTLE_MS = 1_000;
 // How long to keep waiting, after navigation resolves, for the brand's own
