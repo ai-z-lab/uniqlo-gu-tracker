@@ -457,7 +457,11 @@ function renderContent() {
 
 function setActiveTab(container, attr, value) {
   for (const btn of container.querySelectorAll("button")) {
-    btn.classList.toggle("active", btn.dataset[attr] === value);
+    const isActive = btn.dataset[attr] === value;
+    btn.classList.toggle("active", isActive);
+    // 選択状態を色だけに頼らせない。スクリーンリーダーには押下状態として
+    // 伝わり、ハイコントラスト設定などで配色が置き換わる環境でも意味が残る。
+    btn.setAttribute("aria-pressed", String(isActive));
   }
 }
 
