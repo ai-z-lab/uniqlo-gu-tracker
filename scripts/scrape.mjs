@@ -503,10 +503,34 @@ function extractNameFromRenderedHtml(html) {
   return null;
 }
 
+// A product URL is /products/<code>/<priceGroup>, e.g.
+// /products/E484457-000/01?colorDisplayCode=72 — and BOTH parts matter.
+//
+// The same garment is sold as more than one price group at once: one carrying
+// the current full price, another carrying a clearance price for the leftover
+// colours and sizes. Confirmed on リブミニT E484457-000, where /00 is ¥1,500
+// with 28 sizes in stock and no 値下げ flag, while /01 is ¥990 flagged
+// 「値下げ, 一部色サイズ対象」 with 6 sizes left; same split on グラフィックT
+// E483268-000 (¥990 / ¥790) and GU ソフトシアークルーネックT E359527-000
+// (¥790 / ¥390).
+//
+// Dropping the price group collapsed those into one product whose recorded
+// price then swung between the two, depending only on which URL that day's
+// listing happened to link — surfacing as a 'price_up' that reappeared every
+// single day (a real price rise happens once). Keeping it in the id tracks the
+// full-price line and the clearance line as the separate things they are.
+//
+// Colour and size stay *out* of the id on purpose: they live in the query
+// string, they share a price within a price group, and collapsing them is what
+// the run-wide dedup in processProductUrl is built around.
 function productIdFromUrl(url, brand) {
-  const match = url.match(/\/products\/([A-Za-z0-9-]+)/);
-  const code = match ? match[1] : Buffer.from(url).toString('base64url').slice(0, 24);
-  return `${brand}-${code}`;
+  const match = url.match(/\/products\/([A-Za-z0-9-]+)(?:\/(\d{1,3}))?/);
+  if (!match) return `${brand}-${Buffer.from(url).toString('base64url').slice(0, 24)}`;
+  const [, code, priceGroup] = match;
+  // A URL without the segment keeps the bare code rather than assuming '00' —
+  // guessing a price group we did not observe would merge two lines again,
+  // which is the exact failure being fixed.
+  return priceGroup ? `${brand}-${code}-${priceGroup}` : `${brand}-${code}`;
 }
 
 // --- The brand's own price API (the only place a member/限定 price exists) ---
