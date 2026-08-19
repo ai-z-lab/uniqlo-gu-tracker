@@ -41,6 +41,7 @@
       --status-price_up: #7c3aed;
 
       --tab-bg: #ececef;
+      --tab-hover: #dedee3;
     }
 
     @media (prefers-color-scheme: dark) {
@@ -66,6 +67,7 @@
         --status-price_up: #b794f6;
 
         --tab-bg: #232427;
+        --tab-hover: #303138;
       }
     }
 
@@ -138,6 +140,23 @@
       transition: background-color 0.15s, color 0.15s;
     }
 
+    .tabs button:hover:not(.active) {
+      background: var(--tab-hover);
+      color: var(--text);
+    }
+
+    .tabs button:focus-visible {
+      outline: 2px solid var(--text);
+      outline-offset: 2px;
+    }
+
+    /* 選択中のタブは、どちらの列も「塗りつぶし + 反転した文字色」で示す。
+       ブランド側はブランド色、性別側は文字色そのもので塗る — 性別に固有の色を
+       与えるとブランド色と競合して「今どちらのブランクを見ているか」が
+       読み取りにくくなるため、色相を持たない濃淡で差をつける。
+       以前は性別タブだけ --surface での塗り分けだったが、ダークモードでは
+       --surface(#202124) が土台の --tab-bg(#232427) より暗く、浮き上がるはず
+       のタブが沈んで見分けがつかなくなっていた。 */
     .brand-tabs button[data-brand="uniqlo"].active {
       background: var(--brand-uniqlo);
       color: #fff;
@@ -147,9 +166,8 @@
       color: #fff;
     }
     .gender-tabs button.active {
-      background: var(--surface);
-      color: var(--text);
-      box-shadow: var(--shadow);
+      background: var(--text);
+      color: var(--surface);
     }
 
     /* --- Brand-colored content frame: everything below the tabs is washed
