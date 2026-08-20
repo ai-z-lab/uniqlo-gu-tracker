@@ -57,18 +57,21 @@ function formatLimitedPriceEndDate(isoDate) {
   return `${endDateFormatter.format(date)}まで`;
 }
 
-// A distinct "値下げ段階": every time this product's price actually changed
-// while recorded via a markdown-listing row ('first_markdown'/'markdown').
-// The scraper writes a fresh row every scrape even when the discounted price
-// hasn't moved (see scripts/scrape.mjs), so same-price rows collapse into a
-// single point here — "3段階目" means "the 3rd distinct price this product
-// has had while markdown-listed", not "3 rows in the DB". Non-markdown rows
-// (期間限定/値上げ observations that happened in between) are skipped rather
-// than breaking the sequence, since they don't represent a 値下げ step.
-function markdownStagePoints(history) {
+const MARKDOWN_EVENT_TYPES = new Set(["first_markdown", "markdown"]);
+const LIMITED_EVENT_TYPES = new Set(["first_limited", "limited"]);
+
+// The points at which this product's price actually changed, keeping only rows
+// whose event_type is in `eventTypes` (pass null to keep every row).
+//
+// The scraper writes a fresh row every scrape even when the price hasn't moved
+// (see scripts/scrape.mjs), so same-price rows collapse into a single point
+// here. Rows outside `eventTypes` are skipped rather than breaking the
+// sequence, so an observation of a different kind in the middle doesn't split
+// one run of markdowns into two.
+function priceStagePoints(history, eventTypes) {
   const points = [];
   for (const row of history) {
-    if (row.event_type !== "first_markdown" && row.event_type !== "markdown") continue;
+    if (eventTypes && !eventTypes.has(row.event_type)) continue;
     const last = points[points.length - 1];
     if (!last || last.price !== row.price) {
       points.push({ price: row.price, currency: row.currency, scraped_at: row.scraped_at });
@@ -77,7 +80,28 @@ function markdownStagePoints(history) {
   return points;
 }
 
-const stageDateFormatter = new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric" });
+// A distinct "値下げ段階" — "3段階目" means "the 3rd distinct price this
+// product has had while markdown-listed", not "3 rows in the DB".
+function markdownStagePoints(history) {
+  return priceStagePoints(history, MARKDOWN_EVENT_TYPES);
+}
+
+// 値下げも期間限定も日本時間で回っているので、日付も日本時間で出す。
+// limited_price_end_date は日本時間の日付として入っているため、こちらを
+// 閲覧者のローカル時間で出すと「8/21〜8/20」のような並びになりうる。
+const stageDateFormatter = new Intl.DateTimeFormat("ja-JP", {
+  month: "numeric",
+  day: "numeric",
+  timeZone: "Asia/Tokyo",
+});
+
+// limited_price_end_date は時刻を持たない YYYY-MM-DD なので、UTC として
+// 解釈しないと閲覧者のタイムゾーンで1日ずれる(endDateFormatter と同じ理由)。
+const shortEndDateFormatter = new Intl.DateTimeFormat("ja-JP", {
+  month: "numeric",
+  day: "numeric",
+  timeZone: "UTC",
+});
 
 // e.g. "¥1,990(7/8)→¥1,290(7/13)→¥990(7/28)→¥790(8/18)"
 function formatMarkdownStageHistory(points) {
@@ -87,17 +111,76 @@ function formatMarkdownStageHistory(points) {
 
 // The date this product was first ever recorded as 期間限定 (event_type
 // 'first_limited'/'limited') — history is sorted ascending, so the first
-// matching row is the earliest. Unlike markdown, 期間限定 doesn't get a
-// multi-stage breakdown here (a period-limited price is a single ongoing
-// offer, not a sequence of discrete markdowns), just this one "since" date.
+// matching row is the earliest.
 function firstLimitedSeenDate(history) {
   for (const row of history) {
-    if (row.event_type === "first_limited" || row.event_type === "limited") return row.scraped_at;
+    if (LIMITED_EVENT_TYPES.has(row.event_type)) return row.scraped_at;
   }
   return null;
 }
 
-// Buckets `products` by the local calendar day `dateOf(product)` falls on,
+// 期間限定の「周期」。値下げと違い、期間限定は終わると価格が元に戻るので、
+// 値下げと同じ一本の折れ線で結ぶと戻りの上昇が値上げのように見えてしまう。
+// 周期そのものを単位にして、何回目・いつからいつまで・いくらだったかを出す。
+//
+// 区切りは limited_price_end_date。期間限定は金曜開始・木曜終了で毎週
+// 入れ替わるため、終了日が変われば別の周期。終了日が読めなかった行どうしは
+// 価格が変わった時点で別の周期として扱う。
+function isSamePeriod(period, row) {
+  const endDate = row.limited_price_end_date || null;
+  if (period.endDate !== null || endDate !== null) return period.endDate === endDate;
+  return period.price === row.price;
+}
+
+function limitedPeriods(history) {
+  const periods = [];
+  for (const row of history) {
+    if (!LIMITED_EVENT_TYPES.has(row.event_type)) continue;
+    const current = periods[periods.length - 1];
+    if (current && isSamePeriod(current, row)) {
+      current.to = row.scraped_at;
+      // 同じ周期の途中で価格が動いたら安い方を代表値にする(会員価格が後から
+      // 読めるようになった場合など)。
+      if (row.price < current.price) current.price = row.price;
+      continue;
+    }
+    periods.push({
+      from: row.scraped_at,
+      to: row.scraped_at,
+      endDate: row.limited_price_end_date || null,
+      price: row.price,
+      currency: row.currency,
+    });
+  }
+  return periods;
+}
+
+// いま出ている期間限定がいつ始まったか(＝最後の周期の開始日)。
+function currentLimitedStartDate(history) {
+  const periods = limitedPeriods(history);
+  return periods.length > 0 ? periods[periods.length - 1].from : null;
+}
+
+// e.g. "¥2,490(7/11〜7/17) → ¥1,990(8/1〜8/7) → ¥1,990(8/15〜)"
+// 終了日が読めている周期はそれを終わりに使う。読めない周期は最後に確認できた
+// 日で代用する。まだ終わっていない周期は終わりを空けたままにする。
+function formatLimitedPeriods(periods, todayJst = jstDayOf(new Date())) {
+  const fmt = currencyFormatter(periods[0]?.currency ?? "JPY");
+  return periods
+    .map((period) => {
+      const from = stageDateFormatter.format(new Date(period.from));
+      const ongoing = period.endDate !== null && todayJst !== null && period.endDate >= todayJst;
+      const to = ongoing
+        ? ""
+        : period.endDate !== null
+          ? shortEndDateFormatter.format(new Date(period.endDate))
+          : stageDateFormatter.format(new Date(period.to));
+      return `${fmt.format(period.price)}(${from}〜${to})`;
+    })
+    .join(" → ");
+}
+
+// Buckets `products` by the JST calendar day `dateOf(product)` falls on,
 // most-recent-day first, capped to the most recent 14 distinct days so a
 // long-tracked section doesn't produce an unbounded row of chips.
 function groupProductsByDate(products, dateOf) {
@@ -193,6 +276,24 @@ function categoryOrderFor(brand, categories) {
   return [...ordered, ...extra];
 }
 
+// 値下げは「何段階目」、期間限定は「何回目」。1回目は定義上必ず1なので出さない。
+function countSuffixFor(eventType, stagePoints, periods) {
+  if (eventType === "markdown" && stagePoints.length > 0) return `(${stagePoints.length}段階目)`;
+  if (eventType === "limited" && periods.length > 1) return `(${periods.length}回目)`;
+  return "";
+}
+
+// カード下部に出す価格推移の文字列。出すものが無ければ null。
+function priceHistoryTextFor({ isMarkdownFamily, isLimitedFamily, stagePoints, periods, history }) {
+  if (isMarkdownFamily) return stagePoints.length > 0 ? formatMarkdownStageHistory(stagePoints) : null;
+  // 期間限定が1回だけの商品は、価格・終了日・確認開始日がすでにカードに
+  // 出ているので、同じことを繰り返さない。
+  if (isLimitedFamily) return periods.length > 1 ? formatLimitedPeriods(periods) : null;
+  // 値下げでも期間限定でもない商品(値上げなど)。価格が実際に動いた時点だけを並べる。
+  const points = priceStagePoints(history, null);
+  return points.length > 1 ? formatMarkdownStageHistory(points) : null;
+}
+
 function renderCard(product) {
   const { latest, history, offerOver, unconfirmed } = product;
   const previous = history.length > 1 ? history[history.length - 2] : null;
@@ -215,23 +316,21 @@ function renderCard(product) {
   title.textContent = latest.product_name || latest.product_id;
   topRow.appendChild(title);
 
-  const isMarkdownFamily = latest.event_type === "first_markdown" || latest.event_type === "markdown";
-  const isLimitedFamily = latest.event_type === "first_limited" || latest.event_type === "limited";
+  const isMarkdownFamily = MARKDOWN_EVENT_TYPES.has(latest.event_type);
+  const isLimitedFamily = LIMITED_EVENT_TYPES.has(latest.event_type);
   const stagePoints = isMarkdownFamily ? markdownStagePoints(history) : [];
+  const periods = isLimitedFamily ? limitedPeriods(history) : [];
 
   const eventConfig = EVENT_TYPE_CONFIG.find((e) => e.key === latest.event_type);
   if (eventConfig) {
     const badge = document.createElement("span");
     badge.className = "status-badge";
     badge.style.setProperty("--status-color", `var(--status-${eventConfig.key})`);
-    // "初値下げ" is always exactly stage 1 by definition (see classifyEventType
-    // in scripts/scrape.mjs), so the stage count only adds information for a
-    // *follow-up* markdown — append it there instead of duplicating "(1段階目)"
-    // on every 初値下げ badge.
-    badge.textContent =
-      latest.event_type === "markdown" && stagePoints.length > 0
-        ? `${eventConfig.label}(${stagePoints.length}段階目)`
-        : eventConfig.label;
+    // "初値下げ"/"初期間限定" are always exactly the 1st by definition (see
+    // classifyEventType in scripts/scrape.mjs), so the count only adds
+    // information for a *follow-up* observation — append it there instead of
+    // duplicating "(1段階目)" on every 初値下げ badge.
+    badge.textContent = `${eventConfig.label}${countSuffixFor(latest.event_type, stagePoints, periods)}`;
     topRow.appendChild(badge);
   }
 
@@ -332,7 +431,9 @@ function renderCard(product) {
     card.appendChild(note);
   }
 
-  if (isLimitedFamily) {
+  // 周期が2回以上ある商品は、下の周期の一覧に開始日が入っているので出さない。
+  // 「7/11〜」だけを出すと、今の期間限定が7/11から続いているように読める。
+  if (isLimitedFamily && periods.length <= 1) {
     const sinceIso = firstLimitedSeenDate(history);
     if (sinceIso) {
       const since = document.createElement("div");
@@ -347,49 +448,15 @@ function renderCard(product) {
   updated.textContent = `最終確認: ${dateFormatter.format(new Date(latest.scraped_at))}`;
   card.appendChild(updated);
 
-  if (isMarkdownFamily && stagePoints.length > 0) {
-    // Replaces the sparkline chart for markdown-family cards: the arrow text
-    // already conveys the same price-over-time information, with the actual
-    // values/dates attached instead of an unlabeled line, so showing both
-    // would be redundant.
-    const stageHistory = document.createElement("div");
-    stageHistory.className = "stage-history";
-    stageHistory.textContent = formatMarkdownStageHistory(stagePoints);
-    card.appendChild(stageHistory);
-  } else if (history.length > 1) {
-    // Chart.js loads from a CDN (see index.html); if that fails for any
-    // reason (offline, ad blocker, CDN hiccup) the card should still show
-    // its price/name instead of taking the whole dashboard render down with
-    // an uncaught "Chart is not defined".
-    try {
-      const canvas = document.createElement("canvas");
-      card.appendChild(canvas);
-      new Chart(canvas, {
-        type: "line",
-        data: {
-          labels: history.map((h) => h.scraped_at),
-          datasets: [
-            {
-              data: history.map((h) => h.price),
-              borderColor: getComputedStyle(document.documentElement).getPropertyValue(`--brand-${latest.brand}`) || "#999",
-              backgroundColor: "transparent",
-              borderWidth: 2,
-              pointRadius: 0,
-              tension: 0.15,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          animation: false,
-          plugins: { legend: { display: false }, tooltip: { enabled: false } },
-          scales: { x: { display: false }, y: { display: false } },
-        },
-      });
-    } catch (err) {
-      console.error("chart render failed, showing card without sparkline", err);
-    }
+  // 価格の推移は折れ線ではなく文字で出す。期間限定は終わると価格が戻るため、
+  // 折れ線にすると戻りの上昇が値上げのように見えてしまうし、値下げ側も
+  // 目盛りの無い線より実際の金額と日付が並んでいる方が読める。
+  const historyText = priceHistoryTextFor({ isMarkdownFamily, isLimitedFamily, stagePoints, periods, history });
+  if (historyText) {
+    const priceHistory = document.createElement("div");
+    priceHistory.className = "stage-history";
+    priceHistory.textContent = historyText;
+    card.appendChild(priceHistory);
   }
 
   return card;
@@ -511,13 +578,14 @@ function renderContent() {
       }
     } else {
       if (eventConfig.key === "limited") {
-        // "直近で期間限定入りが確認された日" — each product's first-ever 期間限定
-        // observation, grouped by day.
+        // "直近で期間限定入りが確認された日" — 何週間も期間限定を繰り返している
+        // 商品は初回ではなく、いま出ている周期の開始日で数える。初回の日付だと
+        // 「最近期間限定に入った商品」を探しているときに何週間も前の日付が並ぶ。
         appendDateSummary(
           section,
           groupProductsByDate(
             categories.flatMap((c) => byCategory[c]),
-            (p) => firstLimitedSeenDate(p.history)
+            (p) => currentLimitedStartDate(p.history)
           )
         );
       }
