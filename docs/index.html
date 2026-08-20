@@ -441,14 +441,8 @@
       margin-bottom: 0.6rem;
     }
 
-    canvas {
-      width: 100% !important;
-      height: 80px !important;
-    }
-
-    /* Replaces the sparkline chart on markdown-family cards (see app.js) —
-       the same price-over-time information, but with the actual values and
-       dates attached. */
+    /* 価格推移の表示(app.js)。折れ線グラフの置き換えなので、金額と日付が
+       そのまま読めるように等幅数字にしている。 */
     .stage-history {
       color: var(--text);
       font-size: 0.78rem;
@@ -498,7 +492,6 @@
     カテゴリはUNIQLO/GUの正式な分類ではなく、商品名からの推定(簡易キーワード判定)です。
   </footer>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>
