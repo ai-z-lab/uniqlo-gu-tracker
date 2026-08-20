@@ -150,6 +150,8 @@ function withTimeout(promise, ms, label) {
 // server-rendered HTML, unlike price/stock, so a plain fetch is enough
 // and much faster than rendering every listing page too.)
 
+// Returns the body *and* the few response facts needed to explain a listing
+// that parses fine but contains nothing — see describeEmptyListing.
 async function fetchHtml(url) {
   const res = await fetch(url, {
     headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9' },
@@ -157,7 +159,30 @@ async function fetchHtml(url) {
   if (!res.ok) {
     throw new Error(`HTTP ${res.status} fetching ${url}`);
   }
-  return res.text();
+  return { text: await res.text(), status: res.status, finalUrl: res.url };
+}
+
+// A listing that 200s but yields no product links is the worst kind of
+// breakage here: discovery "succeeds", the source records 0 products, the run
+// reports 0 failed, and an entire brand/gender silently stops being tracked.
+// Observed on 2026-08-20 for GU's women's sale listing, which returned 0 links
+// on two consecutive runs while every other listing kept working.
+//
+// So say enough, at the moment it happens, to tell the likely causes apart:
+// a moved page (redirect / different <title>), a page that stopped
+// server-rendering its grid (no "/products/" anywhere in the HTML), or a bot
+// check (short body, unexpected title).
+function describeEmptyListing(url, { status, finalUrl, text }) {
+  const title = (text.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1]?.trim() || '(no <title>)';
+  const lines = [
+    `!! listing returned NO product links: ${url}`,
+    `     HTTP ${status}, ${text.length} bytes`,
+    finalUrl && finalUrl !== url ? `     redirected to: ${finalUrl}` : '     no redirect',
+    `     <title>: ${title}`,
+    `     HTML mentions "/products/": ${text.includes('/products/')}`,
+    '     この一覧が0件のままだと、このソースの商品は一切追跡できません。',
+  ];
+  return lines.join('\n');
 }
 
 function extractProductLinks(html, baseUrl) {
@@ -181,8 +206,12 @@ async function discoverProductUrls(source) {
 
   for (const listingUrl of listingUrls) {
     try {
-      const html = await fetchHtml(listingUrl);
-      for (const link of extractProductLinks(html, listingUrl)) discovered.add(link);
+      const response = await fetchHtml(listingUrl);
+      const links = extractProductLinks(response.text, listingUrl);
+      if (links.length === 0) {
+        console.error(`[${source.id}] ${describeEmptyListing(listingUrl, response)}`);
+      }
+      for (const link of links) discovered.add(link);
     } catch (err) {
       console.error(`[${source.id}] failed to load listing page ${listingUrl}: ${err.message}`);
     }
@@ -1123,6 +1152,9 @@ async function processProductUrl(browser, url, source, productRunState) {
 async function processSource(browser, source, productRunState) {
   const productUrls = await discoverProductUrls(source);
   console.log(`[${source.id}] discovered ${productUrls.length} product page(s)`);
+  if (productUrls.length === 0) {
+    console.error(`[${source.id}] !! このソースからは1件も発見できませんでした (config/sources.json の urls を確認)`);
+  }
 
   const cap = source.maxProducts ?? DEFAULT_MAX_PRODUCTS_PER_SOURCE;
   const targets = productUrls.slice(0, cap);
@@ -1442,9 +1474,10 @@ async function resolveDebugTargets(raw) {
       continue;
     }
     try {
-      const html = await fetchHtml(entry);
-      const links = extractProductLinks(html, entry);
+      const response = await fetchHtml(entry);
+      const links = extractProductLinks(response.text, entry);
       console.log(`[debug] listing ${entry}: discovered ${links.length} product link(s), sampling first ${sample}`);
+      if (links.length === 0) console.error(`[debug] ${describeEmptyListing(entry, response)}`);
       for (const link of links.slice(0, sample)) targets.push({ url: link, via: entry });
     } catch (err) {
       console.error(`[debug] failed to expand listing ${entry}: ${err.message}`);
@@ -1517,7 +1550,7 @@ async function main() {
       return;
     }
 
-    const totals = { discovered: 0, recorded: 0, priceChanged: 0, skipped: 0, failed: 0 };
+    const totals = { discovered: 0, recorded: 0, priceChanged: 0, skipped: 0, failed: 0, emptySources: [] };
     // Shared across every source in this run — see processProductUrl for why.
     const productRunState = new Map();
 
@@ -1528,12 +1561,26 @@ async function main() {
       totals.priceChanged += result.priceChanged;
       totals.skipped += result.skipped;
       totals.failed += result.failed;
+      if (result.discovered === 0) totals.emptySources.push(source.id);
     }
 
     console.log(
       `Done. ${totals.discovered} discovered, ${totals.recorded} recorded ` +
         `(${totals.priceChanged} with a price change), ${totals.skipped} skipped as duplicates, ${totals.failed} failed.`
     );
+
+    // A source that discovers nothing is not a "successful run with fewer
+    // products" — it means that brand/gender vanished from the dashboard
+    // without anything failing. Name them and fail the job, so it is noticed
+    // the same day rather than whenever someone happens to look.
+    if (totals.emptySources.length > 0) {
+      console.error(
+        `!! 1件も発見できなかったソース: ${totals.emptySources.join(', ')} — ` +
+          'そのブランド/性別は今回まったく更新されていません。'
+      );
+      process.exitCode = 1;
+    }
+
     if (totals.discovered > 0 && totals.failed === totals.discovered) {
       process.exitCode = 1;
     }
