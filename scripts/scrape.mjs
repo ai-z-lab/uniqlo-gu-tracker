@@ -43,7 +43,7 @@ const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY ? createClient(SUPABA
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
-const DEFAULT_MAX_PRODUCTS_PER_SOURCE = 200;
+const DEFAULT_MAX_PRODUCTS_PER_SOURCE = 600;
 const REQUEST_DELAY_MS = 150;
 
 // Hard time budgets. Every single Playwright call that touches the network
@@ -150,6 +150,8 @@ function withTimeout(promise, ms, label) {
 // server-rendered HTML, unlike price/stock, so a plain fetch is enough
 // and much faster than rendering every listing page too.)
 
+// Returns the body *and* the few response facts needed to explain a listing
+// that parses fine but contains nothing — see describeEmptyListing.
 async function fetchHtml(url) {
   const res = await fetch(url, {
     headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9' },
@@ -157,7 +159,30 @@ async function fetchHtml(url) {
   if (!res.ok) {
     throw new Error(`HTTP ${res.status} fetching ${url}`);
   }
-  return res.text();
+  return { text: await res.text(), status: res.status, finalUrl: res.url };
+}
+
+// A listing that 200s but yields no product links is the worst kind of
+// breakage here: discovery "succeeds", the source records 0 products, the run
+// reports 0 failed, and an entire brand/gender silently stops being tracked.
+// Observed on 2026-08-20 for GU's women's sale listing, which returned 0 links
+// on two consecutive runs while every other listing kept working.
+//
+// So say enough, at the moment it happens, to tell the likely causes apart:
+// a moved page (redirect / different <title>), a page that stopped
+// server-rendering its grid (no "/products/" anywhere in the HTML), or a bot
+// check (short body, unexpected title).
+function describeEmptyListing(url, { status, finalUrl, text }) {
+  const title = (text.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1]?.trim() || '(no <title>)';
+  const lines = [
+    `!! listing returned NO product links: ${url}`,
+    `     HTTP ${status}, ${text.length} bytes`,
+    finalUrl && finalUrl !== url ? `     redirected to: ${finalUrl}` : '     no redirect',
+    `     <title>: ${title}`,
+    `     HTML mentions "/products/": ${text.includes('/products/')}`,
+    '     この一覧が0件のままだと、このソースの商品は一切追跡できません。',
+  ];
+  return lines.join('\n');
 }
 
 function extractProductLinks(html, baseUrl) {
@@ -181,8 +206,12 @@ async function discoverProductUrls(source) {
 
   for (const listingUrl of listingUrls) {
     try {
-      const html = await fetchHtml(listingUrl);
-      for (const link of extractProductLinks(html, listingUrl)) discovered.add(link);
+      const response = await fetchHtml(listingUrl);
+      const links = extractProductLinks(response.text, listingUrl);
+      if (links.length === 0) {
+        console.error(`[${source.id}] ${describeEmptyListing(listingUrl, response)}`);
+      }
+      for (const link of links) discovered.add(link);
     } catch (err) {
       console.error(`[${source.id}] failed to load listing page ${listingUrl}: ${err.message}`);
     }
@@ -928,6 +957,263 @@ async function renderAndExtract(browser, url, { log = () => {}, renderOptions = 
   }
 }
 
+// --- Discovery and price reading via the brand's own commerce API ---
+//
+// 一覧ページのHTMLから商品リンクを拾う方式をやめて、一覧ページ自身が使って
+// いるAPIを直接叩く。HTML方式には2つの穴があった(いずれも2026-08-21に実測):
+//
+//   1. 一覧は無限スクロールで、HTMLには1ページ目の36件しか入らない。
+//      UNIQLO値下げ(レディース)は実際には295件、GU値下げ(レディース)は227件。
+//      8割以上を取りこぼしていた。
+//   2. そのHTMLへの埋め込み自体が不安定で、同じURLが数分違いで37件→1件に
+//      なることがある(GUだけでなくUNIQLOでも観測)。0件の日もあった。
+//
+// APIは pagination.total を返すので、何件あるかを知った上で最後まで辿れる。
+// 商品ページを描画する必要も無くなる(価格・在庫・期間限定の終了日はすべて
+// l2s APIに入っている)ので、ブラウザは通常の巡回では使わない。
+
+const SEARCH_PAGE_SIZE = 36;
+const SEARCH_MAX_PAGES = 60;
+// l2s は1件あたり0.5秒ほど。直列だと商品数ぶんそのまま伸びるので、まとめて
+// 取ってから記録する。記録側は直列のまま(同じ商品の重複判定と前回行の比較が
+// 順序に依存するため)。
+const L2S_CONCURRENCY = 6;
+
+// 同じ商品が複数の一覧に出る(値下げと期間限定、GUのアプリ会員価格と値下げなど)。
+// 1回の実行の中では l2s の中身は変わらないので、取り直さない。
+const l2sCache = new Map();
+
+const brandOrigin = (brand) => (brand === 'gu' ? 'https://www.gu-global.com' : 'https://www.uniqlo.com');
+
+const listingPageUrl = (brand) => `${brandOrigin(brand)}/jp/ja/feature/sale/women`;
+
+function productPageUrl(brand, productId, priceGroup) {
+  const base = `${brandOrigin(brand)}/jp/ja/products/${productId}`;
+  return priceGroup ? `${base}/${priceGroup}` : base;
+}
+
+async function postJson(url, body, referer) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'User-Agent': USER_AGENT,
+      'Accept-Language': 'ja-JP,ja;q=0.9',
+      'Content-Type': 'application/json',
+      Origin: new URL(url).origin,
+      Referer: referer,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} POST ${url}`);
+  return res.json();
+}
+
+async function getJson(url, referer) {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9', Referer: referer },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} GET ${url}`);
+  return res.json();
+}
+
+// 一覧APIを最後のページまで辿る。pagination.total が分かるので、何件取れる
+// はずなのかを実測と突き合わせられる。
+async function discoverProductsViaApi(source) {
+  const origin = brandOrigin(source.brand);
+  const referer = listingPageUrl(source.brand);
+  const cap = source.maxProducts ?? DEFAULT_MAX_PRODUCTS_PER_SOURCE;
+  const items = [];
+  let total = null;
+
+  for (let page = 0; page < SEARCH_MAX_PAGES; page += 1) {
+    const offset = page * SEARCH_PAGE_SIZE;
+    if (offset >= cap) break;
+    const body = await postJson(
+      `${origin}/jp/api/commerce/v5/ja/products/search?httpFailure=true`,
+      { ...source.api, offset, limit: SEARCH_PAGE_SIZE },
+      referer
+    );
+    const pageItems = body?.result?.items ?? [];
+    total = body?.result?.pagination?.total ?? total;
+    items.push(...pageItems);
+    if (pageItems.length === 0 || items.length >= (total ?? 0)) break;
+    await sleep(REQUEST_DELAY_MS);
+  }
+
+  return { items: items.slice(0, cap), total };
+}
+
+// 期間限定・アプリ会員価格といった値引きの種類は、l2s の flags.priceFlags に
+// サイト自身のラベルとして入っている(code は機械可読、name は「8/27まで
+// 期間限定価格」のような表示文字列そのもの)。前回行との比較に頼らず、
+// その日のページが言っていることをそのまま記録できる。
+const PRICE_FLAG_TO_PRICE_TYPE = {
+  limitedOffer: 'limited',
+  appmemberLimited: 'member',
+  discount: 'markdown',
+};
+
+const jstParts = (epochSeconds) => {
+  const shifted = new Date((epochSeconds + 9 * 60 * 60) * 1000);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+  };
+};
+
+const isoDate = (year, month, day) =>
+  `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+// effectiveTime.end は「切り替わる瞬間」で、実測では金曜2:00(JST)。サイトの
+// 表示は「8/27まで」なので、終了日は end の前日にあたる。朝方に切り替わる
+// 限りこの判定でよく、仮に0:00や6:00に変わっても同じ結果になる。
+function endDateFromEffectiveTime(end) {
+  if (typeof end !== 'number' || end <= 0) return null;
+  const parts = jstParts(end);
+  if (parts.hour < 12) {
+    const previous = jstParts(end - 24 * 60 * 60);
+    return isoDate(previous.year, previous.month, previous.day);
+  }
+  return isoDate(parts.year, parts.month, parts.day);
+}
+
+// サイトが出している "8/27" に、effectiveTime から取った年を付ける。年をまたぐ
+// 期間限定(12/28〜1/1 など)で年がずれないよう、end から最も近い年を選ぶ。
+function endDateFromWording(dateText, end) {
+  const match = typeof dateText === 'string' ? dateText.match(/^(\d{1,2})\/(\d{1,2})$/) : null;
+  if (!match || typeof end !== 'number' || end <= 0) return null;
+  const [, month, day] = match.map(Number);
+  const { year } = jstParts(end);
+  const endMs = end * 1000;
+  let best = null;
+  for (const candidateYear of [year - 1, year, year + 1]) {
+    const candidate = isoDate(candidateYear, month, day);
+    const distance = Math.abs(Date.parse(`${candidate}T00:00:00Z`) - endMs);
+    if (!best || distance < best.distance) best = { candidate, distance };
+  }
+  // 60日以上離れているなら "8/27" の読みそのものが疑わしいので採用しない。
+  return best && best.distance < 60 * 24 * 60 * 60 * 1000 ? best.candidate : null;
+}
+
+// 1つの商品が複数の値引きフラグを持つことがある(値下げ棚にも期間限定棚にも
+// 出ている商品など)。どれを記録するかは、その商品を見つけた一覧が何で
+// 絞っていたかで決める。並び順まかせにすると、同じ商品でも実行のたびに
+// ラベルが変わりかねない。
+function priceFlagFromL2s(body, preferredCodes = [], log = () => {}) {
+  return (
+    pickPriceFlag(body, (code) => preferredCodes.includes(code), log) ??
+    pickPriceFlag(body, () => true, log)
+  );
+}
+
+function pickPriceFlag(body, accept, log) {
+  const entries = body?.result?.l2s ?? [];
+  for (const l2 of entries) {
+    for (const flag of l2?.flags?.priceFlags ?? []) {
+      const priceType = PRICE_FLAG_TO_PRICE_TYPE[flag?.code];
+      if (!priceType || !accept(flag.code)) continue;
+      const end = flag?.effectiveTime?.end;
+      const fromWording = endDateFromWording(flag?.nameWording?.substitutions?.date, end);
+      const fromTime = endDateFromEffectiveTime(end);
+      if (fromWording && fromTime && fromWording !== fromTime) {
+        log(`    price flag ${flag.code}: サイト表示は ${fromWording}、effectiveTime からは ${fromTime} — 表示側を採用`);
+      }
+      return {
+        code: flag.code,
+        name: flag?.name ?? null,
+        priceType,
+        // 終わりがあるのは期間限定だけではない。GUのアプリ会員特別価格も
+        // 「8/27までアプリ会員特別価格」と期限付きで出る。終わりの有無は
+        // 値引きの種類ではなく effectiveTime が持っているので、そちらで決める
+        // (通常値下げは start/end とも0で、自然と日付なしになる)。
+        limitedPriceEndDate: fromWording ?? fromTime,
+      };
+    }
+  }
+  return null;
+}
+
+// 商品1件ぶんを、一覧APIの項目と l2s API のレスポンスだけから組み立てる。
+// 返す形は renderAndExtract と同じなので、記録側は変えずに済む。
+async function extractViaApi(source, item, log = () => {}) {
+  const productId = item?.productId;
+  const priceGroup = item?.priceGroup ?? null;
+  if (!productId) return null;
+
+  const url = productPageUrl(source.brand, productId, priceGroup);
+  const cacheKey = `${source.brand}:${productId}:${priceGroup}`;
+  if (!l2sCache.has(cacheKey)) {
+    l2sCache.set(
+      cacheKey,
+      getJson(
+        `${brandOrigin(source.brand)}/jp/api/commerce/v5/ja/products/${productId}/price-groups/${priceGroup}/l2s` +
+          '?withPrices=true&withStocks=true&includePreviousPrice=false&withMemberPricing=true',
+        listingPageUrl(source.brand)
+      ).catch((err) => {
+        // 失敗したものを残すと、後続のソースでも同じ失敗を繰り返すだけになる。
+        l2sCache.delete(cacheKey);
+        throw err;
+      })
+    );
+  }
+  const body = await l2sCache.get(cacheKey);
+  if (!isPriceApiBody(body)) {
+    log(`    l2s response was not a price payload for ${productId}/${priceGroup}`);
+    return null;
+  }
+
+  // 一覧APIが返している価格を、色違いの深い値引きに引っ張られないための
+  // 目安として渡す(HTML方式で JSON-LD の価格が担っていた役割と同じ)。
+  const tierHint = item?.prices?.promo?.value ?? item?.prices?.base?.value ?? null;
+  const priced = extractPriceFromPriceApiBody(body, url, tierHint, log, 'l2s API');
+  if (!priced) return null;
+
+  const flag = priceFlagFromL2s(body, source.api?.flagCodes ?? [], log);
+  // 記録した価格そのものが会員価格なら、フラグが何であれ 'member'。price_type は
+  // 「この金額が何なのか」を表すもので、値下げ棚から見つけた商品でも、実際に
+  // 記録した金額が会員価格なら値下げとは呼べない。棚の種類は event_type が持つ。
+  // フラグも読めなければ通常値下げとして扱う。
+  const priceType = priced.priceLabel?.startsWith('member.') ? 'member' : flag?.priceType ?? 'markdown';
+
+  return {
+    url,
+    name: item?.name ?? productId,
+    price: priced.price,
+    currency: priced.currency,
+    listPrice: priced.listPrice,
+    priceType,
+    priceFlagName: flag?.name ?? null,
+    stockStatus: priced.stockStatus,
+    inStockSizeCount: priced.inStockSizeCount,
+    // 終了日は price_type とは独立に残す。会員価格が期間限定より安くて
+    // price_type が 'member' になっても、その値引きに終わりがあることは
+    // 変わらないため。
+    limitedPriceEndDate: flag?.limitedPriceEndDate ?? null,
+  };
+}
+
+// 決まった数だけ並行して走らせる。l2s は1件0.5秒ほどなので、直列だと商品数に
+// 比例して伸びる。記録側は直列を保ちたいので、取得だけをまとめて行う。
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      try {
+        results[index] = { ok: true, value: await worker(items[index], index) };
+      } catch (err) {
+        results[index] = { ok: false, error: err };
+      }
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 // --- Recording price events ---
 
 async function fetchLatestRecordedPrice(productId) {
@@ -1010,13 +1296,9 @@ function applyRemarkdown(priceType, previousPriceType, log = () => {}) {
 // determined from the pre-run DB state, rather than re-querying (which would
 // now see that first occurrence's own just-written row and wrongly treat the
 // product as not-new / already-tracked).
-async function processProductUrl(browser, url, source, productRunState) {
+async function recordExtractedProduct(extracted, source, productRunState) {
+  const url = extracted.url;
   const productId = productIdFromUrl(url, source.brand);
-
-  const extracted = await renderAndExtract(browser, url);
-  if (!extracted) {
-    throw new Error('could not extract a price from the rendered page');
-  }
 
   const existing = productRunState.get(productId);
   if (existing) {
@@ -1120,14 +1402,15 @@ async function processProductUrl(browser, url, source, productRunState) {
   return { productId, eventType, priceChanged, price: extracted.price, currency: extracted.currency };
 }
 
-async function processSource(browser, source, productRunState) {
-  const productUrls = await discoverProductUrls(source);
-  console.log(`[${source.id}] discovered ${productUrls.length} product page(s)`);
-
-  const cap = source.maxProducts ?? DEFAULT_MAX_PRODUCTS_PER_SOURCE;
-  const targets = productUrls.slice(0, cap);
-  if (productUrls.length > cap) {
-    console.log(`[${source.id}] capping to first ${cap} product(s) (maxProducts)`);
+async function processSource(source, productRunState) {
+  const { items, total } = await discoverProductsViaApi(source);
+  console.log(
+    `[${source.id}] discovered ${items.length} product(s)` + (total != null ? ` of ${total} the API reports` : '')
+  );
+  if (items.length === 0) {
+    console.error(`[${source.id}] !! このソースからは1件も発見できませんでした (config/sources.json の api を確認)`);
+  } else if (total != null && items.length < total) {
+    console.log(`[${source.id}] capped at ${items.length} of ${total} (maxProducts)`);
   }
 
   let recorded = 0;
@@ -1136,38 +1419,53 @@ async function processSource(browser, source, productRunState) {
   let skipped = 0;
   const byEventType = { first_markdown: 0, first_limited: 0, markdown: 0, limited: 0, price_up: 0 };
 
-  for (const url of targets) {
-    try {
-      const result = await processProductUrl(browser, url, source, productRunState);
-      if (result.skipped) {
-        skipped++;
-      } else {
-        recorded++;
-        byEventType[result.eventType] = (byEventType[result.eventType] ?? 0) + 1;
-        if (result.priceChanged) {
-          priceChanged++;
-          console.log(
-            `[${source.id}] [${result.productId}] ${result.eventType}: ${result.price} ${result.currency}`
-          );
-        }
+  // 取得は並行、記録は直列。同じ商品が複数ソースに出たときの重複判定と、
+  // 前回行との比較が順序に依存するため。
+  for (let start = 0; start < items.length; start += L2S_CONCURRENCY * 4) {
+    const chunk = items.slice(start, start + L2S_CONCURRENCY * 4);
+    const fetched = await mapWithConcurrency(chunk, L2S_CONCURRENCY, (item) => extractViaApi(source, item));
+
+    for (const [i, outcome] of fetched.entries()) {
+      const item = chunk[i];
+      const label = `${item?.productId}/${item?.priceGroup}`;
+      if (!outcome.ok) {
+        failed++;
+        console.error(`[${source.id}] failed for ${label}: ${outcome.error.message}`);
+        continue;
       }
-    } catch (err) {
-      failed++;
-      console.error(`[${source.id}] failed for ${url}: ${err.message}`);
+      if (!outcome.value) {
+        failed++;
+        console.error(`[${source.id}] failed for ${label}: no usable price in the l2s response`);
+        continue;
+      }
+      try {
+        const result = await recordExtractedProduct(outcome.value, source, productRunState);
+        if (result.skipped) {
+          skipped++;
+        } else {
+          recorded++;
+          byEventType[result.eventType] = (byEventType[result.eventType] ?? 0) + 1;
+          if (result.priceChanged) {
+            priceChanged++;
+            console.log(`[${source.id}] [${result.productId}] ${result.eventType}: ${result.price} ${result.currency}`);
+          }
+        }
+      } catch (err) {
+        failed++;
+        console.error(`[${source.id}] failed to record ${label}: ${err.message}`);
+      }
     }
-    // A render/request always happens above (success, skip-after-render, or
-    // failure alike), so always rate-limit before the next one.
     await sleep(REQUEST_DELAY_MS);
   }
 
   console.log(
-    `[${source.id}] recorded ${recorded}/${productUrls.length} ` +
+    `[${source.id}] recorded ${recorded}/${items.length} ` +
       `(first_markdown=${byEventType.first_markdown}, first_limited=${byEventType.first_limited}, ` +
       `markdown=${byEventType.markdown}, limited=${byEventType.limited}, price_up=${byEventType.price_up}), ` +
       `${priceChanged} price change(s), ${skipped} skipped (equal-or-higher price than an earlier occurrence this run), ${failed} failed`
   );
 
-  return { discovered: productUrls.length, recorded, priceChanged, skipped, failed };
+  return { discovered: items.length, recorded, priceChanged, skipped, failed };
 }
 
 // --- Debug mode: render one or more products and dump what we saw ---
@@ -1428,24 +1726,478 @@ async function debugSingleProduct(browser, url, outDir, { via = 'direct' } = {})
 // own workflow input because the scrape workflow only forwards debug_url,
 // and adding an input there would mean editing .github/workflows/, which
 // needs a token scope this project's automation does not have.
+// --- Debug mode: render a listing page and dump what it fetches ---
+//
+// 一覧ページは「商品リンクがサーバー側のHTMLに載っている」前提で fetch だけで
+// 済ませている。ところが 2026-08-20 に GU の値下げ一覧(レディース)が2回続けて
+// 0件になり、HTTP 200・リダイレクト無し・1.1MB の HTML に "/products/" が
+// 1つも含まれていなかった。さらに maxProducts が200でも、どの一覧も36件前後で
+// 頭打ちになっている。
+//
+// どちらも「一覧が自分の JavaScript で商品を取りに行っている」なら説明がつく。
+// その取得先を突き止めるために、一覧ページをレンダリングして、ページ自身が
+// 叩いた JSON を全部拾い、商品番号を多く含むものから並べる。
+// DEBUG_URL に listing-api を混ぜると、一覧URLを商品に展開する代わりにこちらが
+// 動く。
+const LISTING_DEBUG_TOKEN = 'listing-api';
+const LISTING_NAV_TIMEOUT_MS = 25_000;
+const LISTING_SETTLE_MS = 3_000;
+const LISTING_SCROLL_PASSES = 8;
+const LISTING_SCROLL_PAUSE_MS = 1_200;
+
+// 商品番号は E + 6桁。JSON が一覧APIかどうかは「本文に商品番号が何種類
+// 入っているか」でほぼ判別できる。
+const PRODUCT_CODE_RE = /E\d{6}/g;
+
+function productCodesIn(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return new Set(text.match(PRODUCT_CODE_RE) ?? []);
+}
+
+function listingSlug(url) {
+  return (
+    url
+      .replace(/^https?:\/\//, '')
+      .replace(/[^A-Za-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 60) || 'listing'
+  );
+}
+
+async function debugListingPage(browser, url, outDir) {
+  await mkdir(outDir, { recursive: true });
+  const trace = [];
+  const log = (line) => {
+    trace.push(line);
+    console.log(`[debug]   ${line}`);
+  };
+
+  // 1) 今の巡回とまったく同じ fetch。何が返ってきているかを先に押さえる。
+  let plainLinkCount = null;
+  try {
+    const response = await fetchHtml(url);
+    const links = extractProductLinks(response.text, url);
+    plainLinkCount = links.length;
+    log(`plain fetch: HTTP ${response.status}, ${response.text.length} bytes, ${links.length} product link(s)`);
+    if (links.length === 0) log(describeEmptyListing(url, response));
+    await writeFile(path.join(outDir, 'listing-fetched.html'), response.text, 'utf-8');
+  } catch (err) {
+    log(`plain fetch FAILED: ${err.message}`);
+  }
+
+  // 2) 同じURLをブラウザで開き、ページ自身が叩いた JSON を全部拾う。商品ページと
+  //    違って商品番号での絞り込みはしない(どの番号が来るかが知りたいことなので)。
+  const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
+  const page = await context.newPage();
+  const captured = [];
+  page.on('response', async (response) => {
+    try {
+      if (!(response.headers()['content-type'] || '').includes('json')) return;
+      // リクエスト本文も残す。一覧APIを自分から叩けるかどうかは、レスポンスの
+      // 形ではなく「どんなパラメータで呼ばれているか」で決まる。
+      captured.push({
+        url: response.url(),
+        status: response.status(),
+        method: response.request().method(),
+        postData: response.request().postData(),
+        body: await response.json(),
+      });
+    } catch {
+      // 本文が JSON として読めない／すでに読まれている
+    }
+  });
+
+  let renderedLinkCount = null;
+  try {
+    await withTimeout(
+      page.goto(url, { waitUntil: 'domcontentloaded', timeout: LISTING_NAV_TIMEOUT_MS }),
+      LISTING_NAV_TIMEOUT_MS + 2_000,
+      'listing goto'
+    );
+    await page.waitForTimeout(LISTING_SETTLE_MS);
+
+    // 36件で頭打ちなのが「続きは下までスクロールすると読み込まれる」型なのかを
+    // 見るため、末尾まで数回送りながら件数を測り直す。増えなければ別の原因。
+    const counts = [];
+    for (let pass = 0; pass < LISTING_SCROLL_PASSES; pass += 1) {
+      counts.push(await page.evaluate(() => document.querySelectorAll('a[href*="/products/"]').length));
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(LISTING_SCROLL_PAUSE_MS);
+    }
+    counts.push(await page.evaluate(() => document.querySelectorAll('a[href*="/products/"]').length));
+    log(`product links in the rendered DOM after each scroll: ${counts.join(' → ')}`);
+
+    const renderedHtml = await withTimeout(page.content(), CONTENT_TIMEOUT_MS, 'listing page.content');
+    const renderedLinks = extractProductLinks(renderedHtml, url);
+    renderedLinkCount = renderedLinks.length;
+    log(`rendered: ${renderedLinks.length} distinct product link(s) (plain fetch had ${plainLinkCount ?? 'n/a'})`);
+    await writeFile(path.join(outDir, 'listing-rendered.html'), renderedHtml, 'utf-8');
+    await writeFile(path.join(outDir, 'listing-rendered-links.txt'), renderedLinks.join('\n'), 'utf-8');
+  } catch (err) {
+    log(`rendering FAILED: ${err.message}`);
+  } finally {
+    await closeContextSafely(context, log);
+  }
+
+  // 3) 拾った JSON を、含む商品番号の種類数で並べる。一覧APIなら上位に来る。
+  const ranked = captured
+    .map((entry, i) => ({ ...entry, index: i, codes: productCodesIn(entry.body) }))
+    .sort((a, b) => b.codes.size - a.codes.size);
+  log(`captured ${captured.length} JSON response(s)`);
+  const ledger = ranked
+    .slice(0, 20)
+    .map((e) => `    ${e.codes.size} product code(s), HTTP ${e.status}, ${JSON.stringify(e.body).length} bytes — ${e.url}`);
+  if (ledger.length > 0) log(`JSON responses, most product codes first:\n${ledger.join('\n')}`);
+
+  // 商品番号を含むものだけ書き出す。一覧ページは JSON も重いので全部は残さない。
+  const jsonDir = path.join(outDir, 'json');
+  await mkdir(jsonDir, { recursive: true });
+  for (const entry of ranked.filter((e) => e.codes.size > 0).slice(0, 10)) {
+    await writeFile(
+      path.join(jsonDir, `${String(entry.codes.size).padStart(4, '0')}-${entry.index}.json`),
+      JSON.stringify({ url: entry.url, status: entry.status, body: entry.body }, null, 2),
+      'utf-8'
+    );
+  }
+
+  // 一番有力な候補だけ、呼び出し方と中身まで踏み込む。一覧APIを直接叩く案が
+  // 成立するかは「パラメータが再現できるか」と「価格まで入っているか」で決まる。
+  const best = ranked[0];
+  if (best && best.codes.size > 0) {
+    log(`候補の呼び出し方: ${best.method} ${best.url}`);
+    log(`候補のリクエスト本文: ${best.postData ? best.postData.slice(0, 2_000) : '(なし)'}`);
+    log(`候補の構造:\n${describeJsonShape(best.body, { limit: 60 }).map((line) => `    ${line}`).join('\n')}`);
+    const prices = collectPriceCandidates(best.body, { limit: 30 });
+    log(
+      `候補に含まれる価格らしきフィールド(${prices.length}件):\n` +
+        prices.map((entry) => `    ${entry.path} = ${entry.value}`).join('\n')
+    );
+  }
+
+  const summary =
+    best && best.codes.size > 0
+      ? `一覧API候補: ${best.url} (商品番号 ${best.codes.size}種) / fetch ${plainLinkCount ?? 'n/a'}件 → rendered ${renderedLinkCount ?? 'n/a'}件`
+      : `商品番号を含むJSONなし / fetch ${plainLinkCount ?? 'n/a'}件 → rendered ${renderedLinkCount ?? 'n/a'}件`;
+  log(summary);
+  await writeFile(path.join(outDir, 'listing-trace.txt'), trace.join('\n'), 'utf-8');
+  return { url, via: 'listing', summary, domPrices: [] };
+}
+
+// --- Debug mode: can we call the brand APIs ourselves, without a browser? ---
+//
+// 一覧診断で、一覧の中身は POST /api/commerce/v5/ja/products/search から来て
+// いることと、そのリクエスト本文が分かった。一覧APIを直接叩けるなら、
+// 一覧の取りこぼし(8割超)も、商品ページを1件ずつ開いている実行時間も、
+// まとめて解決できる。
+//
+// ただし両サイトとも Akamai Bot Manager が入っている(ページが
+// /HY99HQL_.../ や /h5SsUw9.../ に 201 を返すセンサー送信をしている)ので、
+// ブラウザ無しの素の fetch が通るとは限らない。通るかどうかで取れる手が
+// 変わるため、先に確かめる。
+//
+// 3通りを同じ引数で試して突き合わせる:
+//   1. 素の fetch (今の discoverProductUrls と同じ土俵)
+//   2. ブラウザで一覧ページを開いた後の、そのページの fetch (Cookie あり)
+//   3. 商品個別の l2s API (会員価格・在庫の取得元。ここも直接叩けるか)
+const API_PROBE_TOKEN = 'api-probe';
+
+const API_PROBE_TARGETS = [
+  {
+    brand: 'uniqlo',
+    origin: 'https://www.uniqlo.com',
+    listing: 'https://www.uniqlo.com/jp/ja/feature/sale/women',
+    body: { genderIds: [1071], flagCodes: ['discount'], offset: 0, limit: 36 },
+  },
+  {
+    brand: 'gu',
+    origin: 'https://www.gu-global.com',
+    listing: 'https://www.gu-global.com/jp/ja/feature/sale/women',
+    body: { genderIds: [2256], flagCodes: ['discount'], offset: 0, limit: 36 },
+  },
+];
+
+const searchApiUrl = (origin) => `${origin}/jp/api/commerce/v5/ja/products/search?httpFailure=true`;
+
+const l2sApiUrl = (origin, productId, priceGroup) =>
+  `${origin}/jp/api/commerce/v5/ja/products/${productId}/price-groups/${priceGroup}/l2s` +
+  '?withPrices=true&withStocks=true&includePreviousPrice=false&withMemberPricing=true';
+
+// 期間限定の終了日は、いまは商品ページのJSON-LD(priceValidUntil)からしか
+// 取っていない。一覧API+l2s APIに切り替えるなら、終了日がそちらにも入って
+// いなければ、ダッシュボードの「終了」判定と周期の区切りが成立しなくなる。
+// 日付らしきものを総ざらいして確かめる。
+const DATE_LIKE_KEY_RE = /(date|until|end|start|expir|valid|period|term)/i;
+const DATE_LIKE_VALUE_RE = /\d{4}[-/]\d{1,2}[-/]\d{1,2}/;
+
+function collectDateCandidates(obj, { path = '$', depth = 0, out = [], limit = 40 } = {}) {
+  if (out.length >= limit || obj == null || depth > 12) return out;
+  if (Array.isArray(obj)) {
+    obj.forEach((value, i) => collectDateCandidates(value, { path: `${path}[${i}]`, depth: depth + 1, out, limit }));
+    return out;
+  }
+  if (typeof obj !== 'object') return out;
+  for (const [key, value] of Object.entries(obj)) {
+    if (out.length >= limit) break;
+    const childPath = `${path}.${key}`;
+    if (typeof value === 'string' && value.trim() !== '' && (DATE_LIKE_VALUE_RE.test(value) || DATE_LIKE_KEY_RE.test(key))) {
+      out.push({ path: childPath, value });
+    } else if (typeof value === 'number' && DATE_LIKE_KEY_RE.test(key)) {
+      out.push({ path: childPath, value });
+    } else if (value && typeof value === 'object') {
+      collectDateCandidates(value, { path: childPath, depth: depth + 1, out, limit });
+    }
+  }
+  return out;
+}
+
+async function postSearch(origin, body, referer) {
+  const res = await fetch(searchApiUrl(origin), {
+    method: 'POST',
+    headers: {
+      'User-Agent': USER_AGENT,
+      'Accept-Language': 'ja-JP,ja;q=0.9',
+      'Content-Type': 'application/json',
+      Origin: origin,
+      Referer: referer,
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  try {
+    return { status: res.status, body: JSON.parse(text) };
+  } catch {
+    return { status: res.status, body: null, text };
+  }
+}
+
+async function getL2s(origin, productId, priceGroup, referer) {
+  const res = await fetch(l2sApiUrl(origin, productId, priceGroup), {
+    headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9', Referer: referer },
+  });
+  const text = await res.text();
+  try {
+    return { status: res.status, body: JSON.parse(text) };
+  } catch {
+    return { status: res.status, body: null, text };
+  }
+}
+
+function summarizeSearchBody(body) {
+  const pagination = body?.result?.pagination;
+  const items = body?.result?.items ?? [];
+  return {
+    total: pagination?.total ?? null,
+    count: items.length,
+    items: items.slice(0, 3).map((item) => ({
+      productId: item?.productId,
+      priceGroup: item?.priceGroup,
+      name: item?.name,
+      base: item?.prices?.base?.value ?? null,
+      promo: item?.prices?.promo?.value ?? null,
+      promotionText: item?.promotionText ?? null,
+    })),
+    // 期間限定の一覧を同じAPIから引くには flagCode が要る。集計に候補が
+    // 並んでいるはずなので、そのまま出す。
+    flags: body?.result?.aggregations?.flags ?? null,
+  };
+}
+
+async function probeApis(browser) {
+  const rootDir = path.join(SCRIPT_DIR, '..', 'debug-output');
+  await mkdir(rootDir, { recursive: true });
+  const lines = [];
+  const log = (line) => {
+    lines.push(line);
+    console.log(`[probe] ${line}`);
+  };
+
+  for (const target of API_PROBE_TARGETS) {
+    log(`=== ${target.brand} ===`);
+    const searchUrl = searchApiUrl(target.origin);
+    let firstItem = null;
+
+    // 1. 素の fetch
+    try {
+      const res = await fetch(searchUrl, {
+        method: 'POST',
+        headers: {
+          'User-Agent': USER_AGENT,
+          'Accept-Language': 'ja-JP,ja;q=0.9',
+          'Content-Type': 'application/json',
+          Origin: target.origin,
+          Referer: target.listing,
+        },
+        body: JSON.stringify(target.body),
+      });
+      const text = await res.text();
+      let parsed = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // JSON ではない = ボット判定ページを返された可能性が高い
+      }
+      if (parsed) {
+        const summary = summarizeSearchBody(parsed);
+        firstItem = summary.items[0] ?? null;
+        log(`search via plain fetch: HTTP ${res.status}, total=${summary.total}, items=${summary.count}`);
+        log(`  先頭3件: ${JSON.stringify(summary.items)}`);
+        log(`  aggregations.flags: ${JSON.stringify(summary.flags)}`);
+        await writeFile(path.join(rootDir, `probe-${target.brand}-search.json`), JSON.stringify(parsed, null, 2), 'utf-8');
+      } else {
+        log(`search via plain fetch: HTTP ${res.status}, JSONではない本文 ${text.length} bytes — 先頭200字: ${text.slice(0, 200)}`);
+      }
+    } catch (err) {
+      log(`search via plain fetch: FAILED ${err.message}`);
+    }
+
+    // 2. 一覧ページを開いたブラウザの中から、同じ呼び出し
+    const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
+    const page = await context.newPage();
+    try {
+      await withTimeout(
+        page.goto(target.listing, { waitUntil: 'domcontentloaded', timeout: LISTING_NAV_TIMEOUT_MS }),
+        LISTING_NAV_TIMEOUT_MS + 2_000,
+        'probe goto'
+      );
+      await page.waitForTimeout(LISTING_SETTLE_MS);
+      const viaPage = await page.evaluate(
+        async ([url, body]) => {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const parsed = await res.json().catch(() => null);
+          return { status: res.status, total: parsed?.result?.pagination?.total ?? null, count: parsed?.result?.items?.length ?? null };
+        },
+        [searchUrl, target.body]
+      );
+      log(`search from inside the page: HTTP ${viaPage.status}, total=${viaPage.total}, items=${viaPage.count}`);
+    } catch (err) {
+      log(`search from inside the page: FAILED ${err.message}`);
+    } finally {
+      await closeContextSafely(context, log);
+    }
+
+    // 3. 商品個別の l2s API を素の fetch で
+    if (firstItem?.productId) {
+      const priceGroup = String(firstItem.priceGroup ?? 0).padStart(2, '0');
+      const url = l2sApiUrl(target.origin, firstItem.productId, priceGroup);
+      try {
+        const res = await fetch(url, {
+          headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9', Referer: target.listing },
+        });
+        const text = await res.text();
+        let parsed = null;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          // 同上
+        }
+        const priceCount = parsed?.result?.prices ? Object.keys(parsed.result.prices).length : 0;
+        log(
+          `l2s via plain fetch (${firstItem.productId} / price-group ${priceGroup}): HTTP ${res.status}, ` +
+            `isPriceApiBody=${parsed ? isPriceApiBody(parsed) : 'n/a'}, prices=${priceCount}`
+        );
+        if (!parsed) log(`  JSONではない本文 ${text.length} bytes — 先頭200字: ${text.slice(0, 200)}`);
+        else await writeFile(path.join(rootDir, `probe-${target.brand}-l2s.json`), JSON.stringify(parsed, null, 2), 'utf-8');
+      } catch (err) {
+        log(`l2s via plain fetch: FAILED ${err.message}`);
+      }
+    } else {
+      log('l2s は search が商品を返さなかったため試せませんでした');
+    }
+  }
+
+  // 期間限定商品では終了日がどこに入っているのか。ここが取れないと、
+  // ダッシュボードの「終了」判定と周期の区切りが成立しない。
+  for (const target of API_PROBE_TARGETS) {
+    log(`=== ${target.brand} / 期間限定(limitedOffer)の終了日 ===`);
+    const search = await postSearch(
+      target.origin,
+      { ...target.body, flagCodes: ['limitedOffer'], limit: 5 },
+      target.listing
+    );
+    const item = search.body?.result?.items?.[0];
+    if (!item) {
+      log(`limitedOffer search: HTTP ${search.status}, 商品を取得できませんでした`);
+      continue;
+    }
+    log(`limitedOffer search: HTTP ${search.status}, total=${search.body?.result?.pagination?.total ?? null}`);
+    log(`  対象: ${item.productId} / price-group ${item.priceGroup} / ${item.name}`);
+    const itemDates = collectDateCandidates(item);
+    log(`  一覧APIの商品側にある日付らしきもの(${itemDates.length}件): ${JSON.stringify(itemDates)}`);
+
+    const l2s = await getL2s(target.origin, item.productId, item.priceGroup, target.listing);
+    if (!l2s.body) {
+      log(`  l2s: HTTP ${l2s.status}, JSONではない本文`);
+      continue;
+    }
+    log(`  l2s: HTTP ${l2s.status}`);
+    log(`  l2s の構造:\n${describeJsonShape(l2s.body, { limit: 45 }).map((line) => `      ${line}`).join('\n')}`);
+    const l2sDates = collectDateCandidates(l2s.body).slice(0, 6);
+    log(`  l2s にある日付らしきもの(先頭6件): ${JSON.stringify(l2sDates)}`);
+    // priceFlags には値引きの種類の名前が入っているらしい。ここに「期間限定価格」
+    // 「アプリ会員特別価格」等が入っているなら、price_type をサイト自身の表示から
+    // 決められる(いまは remarkdown だけ前回行との比較に頼っている)。
+    const priceFlags = l2s.body?.result?.l2s?.[0]?.flags?.priceFlags ?? null;
+    log(`  l2s[0].flags.priceFlags: ${JSON.stringify(priceFlags)}`);
+    const productFlags = l2s.body?.result?.l2s?.[0]?.flags?.productFlags ?? null;
+    log(`  l2s[0].flags.productFlags: ${JSON.stringify(productFlags)}`);
+    await writeFile(
+      path.join(rootDir, `probe-${target.brand}-limited-l2s.json`),
+      JSON.stringify({ item, l2s: l2s.body }, null, 2),
+      'utf-8'
+    );
+  }
+
+  // UNIQLO のメンズの genderIds が未確認。items[0].genderName が正解を教えて
+  // くれるので、レディースの 1071 の周辺をなめて突き止める。
+  log('=== uniqlo genderIds の特定 ===');
+  // 1069〜1073 では WOMEN(1071)・男女兼用(1072)・KIDS(1073) しか出ず、MEN が
+  // 見つからなかったので範囲を広げる。0件のIDは黙って飛ばす。
+  const genderSweep = [];
+  for (let id = 1060; id <= 1090; id += 1) genderSweep.push(id);
+  for (const genderId of genderSweep) {
+    const search = await postSearch(
+      'https://www.uniqlo.com',
+      { genderIds: [genderId], flagCodes: ['discount'], offset: 0, limit: 1 },
+      'https://www.uniqlo.com/jp/ja/feature/sale/men'
+    );
+    const item = search.body?.result?.items?.[0];
+    const total = search.body?.result?.pagination?.total ?? 0;
+    if (total > 0) log(`genderIds=[${genderId}]: total=${total}, genderName=${JSON.stringify(item?.genderName ?? null)}`);
+    await sleep(REQUEST_DELAY_MS);
+  }
+
+  await writeFile(path.join(rootDir, 'api-probe.txt'), lines.join('\n'), 'utf-8');
+}
+
 async function resolveDebugTargets(raw) {
   const tokens = raw.split(/[\s,]+/).map((entry) => entry.trim()).filter(Boolean);
   const sampleToken = tokens.find((token) => /^sample=\d+$/.test(token));
-  const entries = tokens.filter((token) => token !== sampleToken);
+  // listing-api を混ぜると、一覧URLを商品に展開せず、一覧そのものを診断する。
+  const listingApi = tokens.includes(LISTING_DEBUG_TOKEN);
+  const entries = tokens.filter((token) => token !== sampleToken && token !== LISTING_DEBUG_TOKEN);
   const sampleRaw = sampleToken ? sampleToken.slice('sample='.length) : process.env.DEBUG_SAMPLE;
   const sample = Number(sampleRaw) > 0 ? Number(sampleRaw) : 3;
   const targets = [];
 
   for (const entry of entries) {
     if (/\/products\//.test(entry)) {
-      targets.push({ url: entry, via: 'direct' });
+      targets.push({ url: entry, kind: 'product', via: 'direct' });
+      continue;
+    }
+    if (listingApi) {
+      targets.push({ url: entry, kind: 'listing', via: 'direct' });
       continue;
     }
     try {
-      const html = await fetchHtml(entry);
-      const links = extractProductLinks(html, entry);
+      const response = await fetchHtml(entry);
+      const links = extractProductLinks(response.text, entry);
       console.log(`[debug] listing ${entry}: discovered ${links.length} product link(s), sampling first ${sample}`);
-      for (const link of links.slice(0, sample)) targets.push({ url: link, via: entry });
+      if (links.length === 0) console.error(`[debug] ${describeEmptyListing(entry, response)}`);
+      for (const link of links.slice(0, sample)) targets.push({ url: link, kind: 'product', via: entry });
     } catch (err) {
       console.error(`[debug] failed to expand listing ${entry}: ${err.message}`);
     }
@@ -1467,17 +2219,24 @@ async function debugProducts(browser, raw) {
     console.error('[debug] no debug targets could be resolved from DEBUG_URL');
     return;
   }
-  console.log(`[debug] debugging ${targets.length} product page(s)`);
+  console.log(`[debug] debugging ${targets.length} page(s)`);
 
   const summaries = [];
   for (const [i, target] of targets.entries()) {
-    const code = (target.url.match(/\/products\/([A-Za-z0-9-]+)/) || [])[1] || 'unknown';
+    const isListing = target.kind === 'listing';
+    const label = isListing
+      ? listingSlug(target.url)
+      : (target.url.match(/\/products\/([A-Za-z0-9-]+)/) || [])[1] || 'unknown';
     // A single target keeps writing straight into debug-output/ so the
     // existing "look at debug-output/page.html" workflow is unchanged.
-    const outDir = targets.length === 1 ? rootDir : path.join(rootDir, `${String(i + 1).padStart(2, '0')}-${code}`);
-    console.log(`[debug] === (${i + 1}/${targets.length}) ${target.url}`);
+    const outDir = targets.length === 1 ? rootDir : path.join(rootDir, `${String(i + 1).padStart(2, '0')}-${label}`);
+    console.log(`[debug] === (${i + 1}/${targets.length}) ${isListing ? 'listing ' : ''}${target.url}`);
     try {
-      summaries.push(await debugSingleProduct(browser, target.url, outDir, { via: target.via }));
+      summaries.push(
+        isListing
+          ? await debugListingPage(browser, target.url, outDir)
+          : await debugSingleProduct(browser, target.url, outDir, { via: target.via })
+      );
     } catch (err) {
       console.error(`[debug] ${target.url} failed: ${err.message}`);
       summaries.push({ url: target.url, via: target.via, summary: `FAILED: ${err.message}`, domPrices: [] });
@@ -1494,7 +2253,12 @@ async function debugProducts(browser, raw) {
   await writeFile(path.join(rootDir, 'summary.txt'), summaryText, 'utf-8');
   console.log(`[debug] ===== summary =====\n${summaryText}`);
 }
-async function main() {
+// 通常の巡回ではブラウザを使わない。価格・在庫・期間限定の終了日はすべて
+// ブランドのAPIから素の fetch で取れる(2026-08-21に実測)。ブラウザが要るのは
+// 調査モードだけなので、そのときだけ起動する。
+const DRY_RUN_TOKEN = 'dry-run';
+
+async function withBrowser(run) {
   console.log('launching browser');
   const browser = await withTimeout(
     chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH, args: ['--no-sandbox', '--disable-dev-shm-usage'] }),
@@ -1502,45 +2266,116 @@ async function main() {
     'chromium.launch'
   );
   console.log('browser launched');
-
   try {
-    if (DEBUG_URL) {
-      await debugProducts(browser, DEBUG_URL);
-      return;
-    }
-
-    const raw = await readFile(new URL('../config/sources.json', import.meta.url), 'utf-8');
-    const sources = JSON.parse(raw);
-
-    if (sources.length === 0) {
-      console.log('No sources configured in config/sources.json — nothing to scrape.');
-      return;
-    }
-
-    const totals = { discovered: 0, recorded: 0, priceChanged: 0, skipped: 0, failed: 0 };
-    // Shared across every source in this run — see processProductUrl for why.
-    const productRunState = new Map();
-
-    for (const source of sources) {
-      const result = await processSource(browser, source, productRunState);
-      totals.discovered += result.discovered;
-      totals.recorded += result.recorded;
-      totals.priceChanged += result.priceChanged;
-      totals.skipped += result.skipped;
-      totals.failed += result.failed;
-    }
-
-    console.log(
-      `Done. ${totals.discovered} discovered, ${totals.recorded} recorded ` +
-        `(${totals.priceChanged} with a price change), ${totals.skipped} skipped as duplicates, ${totals.failed} failed.`
-    );
-    if (totals.discovered > 0 && totals.failed === totals.discovered) {
-      process.exitCode = 1;
-    }
+    await run(browser);
   } finally {
     await withTimeout(browser.close(), 10_000, 'browser.close').catch((err) => {
       console.error(`browser.close did not finish cleanly: ${err.message}`);
     });
+  }
+}
+
+// 取得だけ行い、記録すると何が書かれるかを出す。商品数が254件から1,200件超に
+// 増える変更なので、本番のテーブルに書く前に確かめられるようにしておく。
+async function dryRunSources(sources) {
+  let discovered = 0;
+  let priced = 0;
+  let failed = 0;
+  const byPriceType = {};
+
+  for (const source of sources) {
+    const { items, total } = await discoverProductsViaApi(source);
+    discovered += items.length;
+    console.log(`[${source.id}] discovered ${items.length} product(s) of ${total ?? '?'} the API reports`);
+
+    const fetched = await mapWithConcurrency(items, L2S_CONCURRENCY, (item) => extractViaApi(source, item));
+    const samples = [];
+    for (const [i, outcome] of fetched.entries()) {
+      if (!outcome.ok || !outcome.value) {
+        failed++;
+        if (failed <= 10) console.error(`[${source.id}] failed for ${items[i]?.productId}/${items[i]?.priceGroup}: ${outcome.ok ? 'no usable price' : outcome.error.message}`);
+        continue;
+      }
+      priced++;
+      const value = outcome.value;
+      byPriceType[value.priceType] = (byPriceType[value.priceType] ?? 0) + 1;
+      if (samples.length < 3) {
+        samples.push(
+          `${productIdFromUrl(value.url, source.brand)} ${value.price} ${value.currency} ` +
+            `(list ${value.listPrice ?? '-'}, ${value.priceType}` +
+            `${value.limitedPriceEndDate ? `, 〜${value.limitedPriceEndDate}` : ''}` +
+            `${value.priceFlagName ? `, "${value.priceFlagName}"` : ''}) ${value.name}`
+        );
+      }
+    }
+    for (const sample of samples) console.log(`[${source.id}]   ${sample}`);
+  }
+
+  console.log(
+    `Dry run. ${discovered} discovered, ${priced} priced, ${failed} failed. ` +
+      `price_type: ${JSON.stringify(byPriceType)}`
+  );
+  if (failed > 0 && failed === discovered) process.exitCode = 1;
+}
+
+async function loadSources() {
+  const raw = await readFile(new URL('../config/sources.json', import.meta.url), 'utf-8');
+  return JSON.parse(raw);
+}
+
+async function main() {
+  if (DEBUG_URL) {
+    const token = DEBUG_URL.trim();
+    if (token === DRY_RUN_TOKEN) {
+      await dryRunSources(await loadSources());
+      return;
+    }
+    await withBrowser(async (browser) => {
+      if (token === API_PROBE_TOKEN) await probeApis(browser);
+      else await debugProducts(browser, DEBUG_URL);
+    });
+    return;
+  }
+
+  const sources = await loadSources();
+  if (sources.length === 0) {
+    console.log('No sources configured in config/sources.json — nothing to scrape.');
+    return;
+  }
+
+  const totals = { discovered: 0, recorded: 0, priceChanged: 0, skipped: 0, failed: 0, emptySources: [] };
+  // Shared across every source in this run — see recordExtractedProduct for why.
+  const productRunState = new Map();
+
+  for (const source of sources) {
+    const result = await processSource(source, productRunState);
+    totals.discovered += result.discovered;
+    totals.recorded += result.recorded;
+    totals.priceChanged += result.priceChanged;
+    totals.skipped += result.skipped;
+    totals.failed += result.failed;
+    if (result.discovered === 0) totals.emptySources.push(source.id);
+  }
+
+  console.log(
+    `Done. ${totals.discovered} discovered, ${totals.recorded} recorded ` +
+      `(${totals.priceChanged} with a price change), ${totals.skipped} skipped as duplicates, ${totals.failed} failed.`
+  );
+
+  // A source that discovers nothing is not a "successful run with fewer
+  // products" — it means that brand/gender vanished from the dashboard
+  // without anything failing. Name them and fail the job, so it is noticed
+  // the same day rather than whenever someone happens to look.
+  if (totals.emptySources.length > 0) {
+    console.error(
+      `!! 1件も発見できなかったソース: ${totals.emptySources.join(', ')} — ` +
+        'そのブランド/性別は今回まったく更新されていません。'
+    );
+    process.exitCode = 1;
+  }
+
+  if (totals.discovered > 0 && totals.failed === totals.discovered) {
+    process.exitCode = 1;
   }
 }
 
