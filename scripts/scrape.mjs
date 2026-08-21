@@ -43,7 +43,7 @@ const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY ? createClient(SUPABA
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
-const DEFAULT_MAX_PRODUCTS_PER_SOURCE = 200;
+const DEFAULT_MAX_PRODUCTS_PER_SOURCE = 600;
 const REQUEST_DELAY_MS = 150;
 
 // Hard time budgets. Every single Playwright call that touches the network
@@ -957,6 +957,260 @@ async function renderAndExtract(browser, url, { log = () => {}, renderOptions = 
   }
 }
 
+// --- Discovery and price reading via the brand's own commerce API ---
+//
+// 一覧ページのHTMLから商品リンクを拾う方式をやめて、一覧ページ自身が使って
+// いるAPIを直接叩く。HTML方式には2つの穴があった(いずれも2026-08-21に実測):
+//
+//   1. 一覧は無限スクロールで、HTMLには1ページ目の36件しか入らない。
+//      UNIQLO値下げ(レディース)は実際には295件、GU値下げ(レディース)は227件。
+//      8割以上を取りこぼしていた。
+//   2. そのHTMLへの埋め込み自体が不安定で、同じURLが数分違いで37件→1件に
+//      なることがある(GUだけでなくUNIQLOでも観測)。0件の日もあった。
+//
+// APIは pagination.total を返すので、何件あるかを知った上で最後まで辿れる。
+// 商品ページを描画する必要も無くなる(価格・在庫・期間限定の終了日はすべて
+// l2s APIに入っている)ので、ブラウザは通常の巡回では使わない。
+
+const SEARCH_PAGE_SIZE = 36;
+const SEARCH_MAX_PAGES = 60;
+// l2s は1件あたり0.5秒ほど。直列だと商品数ぶんそのまま伸びるので、まとめて
+// 取ってから記録する。記録側は直列のまま(同じ商品の重複判定と前回行の比較が
+// 順序に依存するため)。
+const L2S_CONCURRENCY = 6;
+
+// 同じ商品が複数の一覧に出る(値下げと期間限定、GUのアプリ会員価格と値下げなど)。
+// 1回の実行の中では l2s の中身は変わらないので、取り直さない。
+const l2sCache = new Map();
+
+const brandOrigin = (brand) => (brand === 'gu' ? 'https://www.gu-global.com' : 'https://www.uniqlo.com');
+
+const listingPageUrl = (brand) => `${brandOrigin(brand)}/jp/ja/feature/sale/women`;
+
+function productPageUrl(brand, productId, priceGroup) {
+  const base = `${brandOrigin(brand)}/jp/ja/products/${productId}`;
+  return priceGroup ? `${base}/${priceGroup}` : base;
+}
+
+async function postJson(url, body, referer) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'User-Agent': USER_AGENT,
+      'Accept-Language': 'ja-JP,ja;q=0.9',
+      'Content-Type': 'application/json',
+      Origin: new URL(url).origin,
+      Referer: referer,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} POST ${url}`);
+  return res.json();
+}
+
+async function getJson(url, referer) {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9', Referer: referer },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} GET ${url}`);
+  return res.json();
+}
+
+// 一覧APIを最後のページまで辿る。pagination.total が分かるので、何件取れる
+// はずなのかを実測と突き合わせられる。
+async function discoverProductsViaApi(source) {
+  const origin = brandOrigin(source.brand);
+  const referer = listingPageUrl(source.brand);
+  const cap = source.maxProducts ?? DEFAULT_MAX_PRODUCTS_PER_SOURCE;
+  const items = [];
+  let total = null;
+
+  for (let page = 0; page < SEARCH_MAX_PAGES; page += 1) {
+    const offset = page * SEARCH_PAGE_SIZE;
+    if (offset >= cap) break;
+    const body = await postJson(
+      `${origin}/jp/api/commerce/v5/ja/products/search?httpFailure=true`,
+      { ...source.api, offset, limit: SEARCH_PAGE_SIZE },
+      referer
+    );
+    const pageItems = body?.result?.items ?? [];
+    total = body?.result?.pagination?.total ?? total;
+    items.push(...pageItems);
+    if (pageItems.length === 0 || items.length >= (total ?? 0)) break;
+    await sleep(REQUEST_DELAY_MS);
+  }
+
+  return { items: items.slice(0, cap), total };
+}
+
+// 期間限定・アプリ会員価格といった値引きの種類は、l2s の flags.priceFlags に
+// サイト自身のラベルとして入っている(code は機械可読、name は「8/27まで
+// 期間限定価格」のような表示文字列そのもの)。前回行との比較に頼らず、
+// その日のページが言っていることをそのまま記録できる。
+const PRICE_FLAG_TO_PRICE_TYPE = {
+  limitedOffer: 'limited',
+  appmemberLimited: 'member',
+  discount: 'markdown',
+};
+
+const jstParts = (epochSeconds) => {
+  const shifted = new Date((epochSeconds + 9 * 60 * 60) * 1000);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+  };
+};
+
+const isoDate = (year, month, day) =>
+  `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+// effectiveTime.end は「切り替わる瞬間」で、実測では金曜2:00(JST)。サイトの
+// 表示は「8/27まで」なので、終了日は end の前日にあたる。朝方に切り替わる
+// 限りこの判定でよく、仮に0:00や6:00に変わっても同じ結果になる。
+function endDateFromEffectiveTime(end) {
+  if (typeof end !== 'number' || end <= 0) return null;
+  const parts = jstParts(end);
+  if (parts.hour < 12) {
+    const previous = jstParts(end - 24 * 60 * 60);
+    return isoDate(previous.year, previous.month, previous.day);
+  }
+  return isoDate(parts.year, parts.month, parts.day);
+}
+
+// サイトが出している "8/27" に、effectiveTime から取った年を付ける。年をまたぐ
+// 期間限定(12/28〜1/1 など)で年がずれないよう、end から最も近い年を選ぶ。
+function endDateFromWording(dateText, end) {
+  const match = typeof dateText === 'string' ? dateText.match(/^(\d{1,2})\/(\d{1,2})$/) : null;
+  if (!match || typeof end !== 'number' || end <= 0) return null;
+  const [, month, day] = match.map(Number);
+  const { year } = jstParts(end);
+  const endMs = end * 1000;
+  let best = null;
+  for (const candidateYear of [year - 1, year, year + 1]) {
+    const candidate = isoDate(candidateYear, month, day);
+    const distance = Math.abs(Date.parse(`${candidate}T00:00:00Z`) - endMs);
+    if (!best || distance < best.distance) best = { candidate, distance };
+  }
+  // 60日以上離れているなら "8/27" の読みそのものが疑わしいので採用しない。
+  return best && best.distance < 60 * 24 * 60 * 60 * 1000 ? best.candidate : null;
+}
+
+// 1つの商品が複数の値引きフラグを持つことがある(値下げ棚にも期間限定棚にも
+// 出ている商品など)。どれを記録するかは、その商品を見つけた一覧が何で
+// 絞っていたかで決める。並び順まかせにすると、同じ商品でも実行のたびに
+// ラベルが変わりかねない。
+function priceFlagFromL2s(body, preferredCodes = [], log = () => {}) {
+  return (
+    pickPriceFlag(body, (code) => preferredCodes.includes(code), log) ??
+    pickPriceFlag(body, () => true, log)
+  );
+}
+
+function pickPriceFlag(body, accept, log) {
+  const entries = body?.result?.l2s ?? [];
+  for (const l2 of entries) {
+    for (const flag of l2?.flags?.priceFlags ?? []) {
+      const priceType = PRICE_FLAG_TO_PRICE_TYPE[flag?.code];
+      if (!priceType || !accept(flag.code)) continue;
+      const end = flag?.effectiveTime?.end;
+      const fromWording = endDateFromWording(flag?.nameWording?.substitutions?.date, end);
+      const fromTime = endDateFromEffectiveTime(end);
+      if (fromWording && fromTime && fromWording !== fromTime) {
+        log(`    price flag ${flag.code}: サイト表示は ${fromWording}、effectiveTime からは ${fromTime} — 表示側を採用`);
+      }
+      return {
+        code: flag.code,
+        name: flag?.name ?? null,
+        priceType,
+        // 期間限定でない値引き(通常値下げ)には終わりが無いので日付は持たせない。
+        limitedPriceEndDate: priceType === 'limited' ? fromWording ?? fromTime : null,
+      };
+    }
+  }
+  return null;
+}
+
+// 商品1件ぶんを、一覧APIの項目と l2s API のレスポンスだけから組み立てる。
+// 返す形は renderAndExtract と同じなので、記録側は変えずに済む。
+async function extractViaApi(source, item, log = () => {}) {
+  const productId = item?.productId;
+  const priceGroup = item?.priceGroup ?? null;
+  if (!productId) return null;
+
+  const url = productPageUrl(source.brand, productId, priceGroup);
+  const cacheKey = `${source.brand}:${productId}:${priceGroup}`;
+  if (!l2sCache.has(cacheKey)) {
+    l2sCache.set(
+      cacheKey,
+      getJson(
+        `${brandOrigin(source.brand)}/jp/api/commerce/v5/ja/products/${productId}/price-groups/${priceGroup}/l2s` +
+          '?withPrices=true&withStocks=true&includePreviousPrice=false&withMemberPricing=true',
+        listingPageUrl(source.brand)
+      ).catch((err) => {
+        // 失敗したものを残すと、後続のソースでも同じ失敗を繰り返すだけになる。
+        l2sCache.delete(cacheKey);
+        throw err;
+      })
+    );
+  }
+  const body = await l2sCache.get(cacheKey);
+  if (!isPriceApiBody(body)) {
+    log(`    l2s response was not a price payload for ${productId}/${priceGroup}`);
+    return null;
+  }
+
+  // 一覧APIが返している価格を、色違いの深い値引きに引っ張られないための
+  // 目安として渡す(HTML方式で JSON-LD の価格が担っていた役割と同じ)。
+  const tierHint = item?.prices?.promo?.value ?? item?.prices?.base?.value ?? null;
+  const priced = extractPriceFromPriceApiBody(body, url, tierHint, log, 'l2s API');
+  if (!priced) return null;
+
+  const flag = priceFlagFromL2s(body, source.api?.flagCodes ?? [], log);
+  // 記録した価格そのものが会員価格なら、フラグが何であれ 'member'。price_type は
+  // 「この金額が何なのか」を表すもので、値下げ棚から見つけた商品でも、実際に
+  // 記録した金額が会員価格なら値下げとは呼べない。棚の種類は event_type が持つ。
+  // フラグも読めなければ通常値下げとして扱う。
+  const priceType = priced.priceLabel?.startsWith('member.') ? 'member' : flag?.priceType ?? 'markdown';
+
+  return {
+    url,
+    name: item?.name ?? productId,
+    price: priced.price,
+    currency: priced.currency,
+    listPrice: priced.listPrice,
+    priceType,
+    priceFlagName: flag?.name ?? null,
+    stockStatus: priced.stockStatus,
+    inStockSizeCount: priced.inStockSizeCount,
+    // 終了日は price_type とは独立に残す。会員価格が期間限定より安くて
+    // price_type が 'member' になっても、その期間限定に終わりがあることは
+    // 変わらないため。
+    limitedPriceEndDate: flag?.limitedPriceEndDate ?? null,
+  };
+}
+
+// 決まった数だけ並行して走らせる。l2s は1件0.5秒ほどなので、直列だと商品数に
+// 比例して伸びる。記録側は直列を保ちたいので、取得だけをまとめて行う。
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      try {
+        results[index] = { ok: true, value: await worker(items[index], index) };
+      } catch (err) {
+        results[index] = { ok: false, error: err };
+      }
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 // --- Recording price events ---
 
 async function fetchLatestRecordedPrice(productId) {
@@ -1039,13 +1293,9 @@ function applyRemarkdown(priceType, previousPriceType, log = () => {}) {
 // determined from the pre-run DB state, rather than re-querying (which would
 // now see that first occurrence's own just-written row and wrongly treat the
 // product as not-new / already-tracked).
-async function processProductUrl(browser, url, source, productRunState) {
+async function recordExtractedProduct(extracted, source, productRunState) {
+  const url = extracted.url;
   const productId = productIdFromUrl(url, source.brand);
-
-  const extracted = await renderAndExtract(browser, url);
-  if (!extracted) {
-    throw new Error('could not extract a price from the rendered page');
-  }
 
   const existing = productRunState.get(productId);
   if (existing) {
@@ -1149,17 +1399,15 @@ async function processProductUrl(browser, url, source, productRunState) {
   return { productId, eventType, priceChanged, price: extracted.price, currency: extracted.currency };
 }
 
-async function processSource(browser, source, productRunState) {
-  const productUrls = await discoverProductUrls(source);
-  console.log(`[${source.id}] discovered ${productUrls.length} product page(s)`);
-  if (productUrls.length === 0) {
-    console.error(`[${source.id}] !! このソースからは1件も発見できませんでした (config/sources.json の urls を確認)`);
-  }
-
-  const cap = source.maxProducts ?? DEFAULT_MAX_PRODUCTS_PER_SOURCE;
-  const targets = productUrls.slice(0, cap);
-  if (productUrls.length > cap) {
-    console.log(`[${source.id}] capping to first ${cap} product(s) (maxProducts)`);
+async function processSource(source, productRunState) {
+  const { items, total } = await discoverProductsViaApi(source);
+  console.log(
+    `[${source.id}] discovered ${items.length} product(s)` + (total != null ? ` of ${total} the API reports` : '')
+  );
+  if (items.length === 0) {
+    console.error(`[${source.id}] !! このソースからは1件も発見できませんでした (config/sources.json の api を確認)`);
+  } else if (total != null && items.length < total) {
+    console.log(`[${source.id}] capped at ${items.length} of ${total} (maxProducts)`);
   }
 
   let recorded = 0;
@@ -1168,38 +1416,53 @@ async function processSource(browser, source, productRunState) {
   let skipped = 0;
   const byEventType = { first_markdown: 0, first_limited: 0, markdown: 0, limited: 0, price_up: 0 };
 
-  for (const url of targets) {
-    try {
-      const result = await processProductUrl(browser, url, source, productRunState);
-      if (result.skipped) {
-        skipped++;
-      } else {
-        recorded++;
-        byEventType[result.eventType] = (byEventType[result.eventType] ?? 0) + 1;
-        if (result.priceChanged) {
-          priceChanged++;
-          console.log(
-            `[${source.id}] [${result.productId}] ${result.eventType}: ${result.price} ${result.currency}`
-          );
-        }
+  // 取得は並行、記録は直列。同じ商品が複数ソースに出たときの重複判定と、
+  // 前回行との比較が順序に依存するため。
+  for (let start = 0; start < items.length; start += L2S_CONCURRENCY * 4) {
+    const chunk = items.slice(start, start + L2S_CONCURRENCY * 4);
+    const fetched = await mapWithConcurrency(chunk, L2S_CONCURRENCY, (item) => extractViaApi(source, item));
+
+    for (const [i, outcome] of fetched.entries()) {
+      const item = chunk[i];
+      const label = `${item?.productId}/${item?.priceGroup}`;
+      if (!outcome.ok) {
+        failed++;
+        console.error(`[${source.id}] failed for ${label}: ${outcome.error.message}`);
+        continue;
       }
-    } catch (err) {
-      failed++;
-      console.error(`[${source.id}] failed for ${url}: ${err.message}`);
+      if (!outcome.value) {
+        failed++;
+        console.error(`[${source.id}] failed for ${label}: no usable price in the l2s response`);
+        continue;
+      }
+      try {
+        const result = await recordExtractedProduct(outcome.value, source, productRunState);
+        if (result.skipped) {
+          skipped++;
+        } else {
+          recorded++;
+          byEventType[result.eventType] = (byEventType[result.eventType] ?? 0) + 1;
+          if (result.priceChanged) {
+            priceChanged++;
+            console.log(`[${source.id}] [${result.productId}] ${result.eventType}: ${result.price} ${result.currency}`);
+          }
+        }
+      } catch (err) {
+        failed++;
+        console.error(`[${source.id}] failed to record ${label}: ${err.message}`);
+      }
     }
-    // A render/request always happens above (success, skip-after-render, or
-    // failure alike), so always rate-limit before the next one.
     await sleep(REQUEST_DELAY_MS);
   }
 
   console.log(
-    `[${source.id}] recorded ${recorded}/${productUrls.length} ` +
+    `[${source.id}] recorded ${recorded}/${items.length} ` +
       `(first_markdown=${byEventType.first_markdown}, first_limited=${byEventType.first_limited}, ` +
       `markdown=${byEventType.markdown}, limited=${byEventType.limited}, price_up=${byEventType.price_up}), ` +
       `${priceChanged} price change(s), ${skipped} skipped (equal-or-higher price than an earlier occurrence this run), ${failed} failed`
   );
 
-  return { discovered: productUrls.length, recorded, priceChanged, skipped, failed };
+  return { discovered: items.length, recorded, priceChanged, skipped, failed };
 }
 
 // --- Debug mode: render one or more products and dump what we saw ---
@@ -1987,7 +2250,12 @@ async function debugProducts(browser, raw) {
   await writeFile(path.join(rootDir, 'summary.txt'), summaryText, 'utf-8');
   console.log(`[debug] ===== summary =====\n${summaryText}`);
 }
-async function main() {
+// 通常の巡回ではブラウザを使わない。価格・在庫・期間限定の終了日はすべて
+// ブランドのAPIから素の fetch で取れる(2026-08-21に実測)。ブラウザが要るのは
+// 調査モードだけなので、そのときだけ起動する。
+const DRY_RUN_TOKEN = 'dry-run';
+
+async function withBrowser(run) {
   console.log('launching browser');
   const browser = await withTimeout(
     chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH, args: ['--no-sandbox', '--disable-dev-shm-usage'] }),
@@ -1995,60 +2263,116 @@ async function main() {
     'chromium.launch'
   );
   console.log('browser launched');
-
   try {
-    if (DEBUG_URL) {
-      if (DEBUG_URL.trim() === API_PROBE_TOKEN) await probeApis(browser);
-      else await debugProducts(browser, DEBUG_URL);
-      return;
-    }
-
-    const raw = await readFile(new URL('../config/sources.json', import.meta.url), 'utf-8');
-    const sources = JSON.parse(raw);
-
-    if (sources.length === 0) {
-      console.log('No sources configured in config/sources.json — nothing to scrape.');
-      return;
-    }
-
-    const totals = { discovered: 0, recorded: 0, priceChanged: 0, skipped: 0, failed: 0, emptySources: [] };
-    // Shared across every source in this run — see processProductUrl for why.
-    const productRunState = new Map();
-
-    for (const source of sources) {
-      const result = await processSource(browser, source, productRunState);
-      totals.discovered += result.discovered;
-      totals.recorded += result.recorded;
-      totals.priceChanged += result.priceChanged;
-      totals.skipped += result.skipped;
-      totals.failed += result.failed;
-      if (result.discovered === 0) totals.emptySources.push(source.id);
-    }
-
-    console.log(
-      `Done. ${totals.discovered} discovered, ${totals.recorded} recorded ` +
-        `(${totals.priceChanged} with a price change), ${totals.skipped} skipped as duplicates, ${totals.failed} failed.`
-    );
-
-    // A source that discovers nothing is not a "successful run with fewer
-    // products" — it means that brand/gender vanished from the dashboard
-    // without anything failing. Name them and fail the job, so it is noticed
-    // the same day rather than whenever someone happens to look.
-    if (totals.emptySources.length > 0) {
-      console.error(
-        `!! 1件も発見できなかったソース: ${totals.emptySources.join(', ')} — ` +
-          'そのブランド/性別は今回まったく更新されていません。'
-      );
-      process.exitCode = 1;
-    }
-
-    if (totals.discovered > 0 && totals.failed === totals.discovered) {
-      process.exitCode = 1;
-    }
+    await run(browser);
   } finally {
     await withTimeout(browser.close(), 10_000, 'browser.close').catch((err) => {
       console.error(`browser.close did not finish cleanly: ${err.message}`);
     });
+  }
+}
+
+// 取得だけ行い、記録すると何が書かれるかを出す。商品数が254件から1,200件超に
+// 増える変更なので、本番のテーブルに書く前に確かめられるようにしておく。
+async function dryRunSources(sources) {
+  let discovered = 0;
+  let priced = 0;
+  let failed = 0;
+  const byPriceType = {};
+
+  for (const source of sources) {
+    const { items, total } = await discoverProductsViaApi(source);
+    discovered += items.length;
+    console.log(`[${source.id}] discovered ${items.length} product(s) of ${total ?? '?'} the API reports`);
+
+    const fetched = await mapWithConcurrency(items, L2S_CONCURRENCY, (item) => extractViaApi(source, item));
+    const samples = [];
+    for (const [i, outcome] of fetched.entries()) {
+      if (!outcome.ok || !outcome.value) {
+        failed++;
+        if (failed <= 10) console.error(`[${source.id}] failed for ${items[i]?.productId}/${items[i]?.priceGroup}: ${outcome.ok ? 'no usable price' : outcome.error.message}`);
+        continue;
+      }
+      priced++;
+      const value = outcome.value;
+      byPriceType[value.priceType] = (byPriceType[value.priceType] ?? 0) + 1;
+      if (samples.length < 3) {
+        samples.push(
+          `${productIdFromUrl(value.url, source.brand)} ${value.price} ${value.currency} ` +
+            `(list ${value.listPrice ?? '-'}, ${value.priceType}` +
+            `${value.limitedPriceEndDate ? `, 〜${value.limitedPriceEndDate}` : ''}` +
+            `${value.priceFlagName ? `, "${value.priceFlagName}"` : ''}) ${value.name}`
+        );
+      }
+    }
+    for (const sample of samples) console.log(`[${source.id}]   ${sample}`);
+  }
+
+  console.log(
+    `Dry run. ${discovered} discovered, ${priced} priced, ${failed} failed. ` +
+      `price_type: ${JSON.stringify(byPriceType)}`
+  );
+  if (failed > 0 && failed === discovered) process.exitCode = 1;
+}
+
+async function loadSources() {
+  const raw = await readFile(new URL('../config/sources.json', import.meta.url), 'utf-8');
+  return JSON.parse(raw);
+}
+
+async function main() {
+  if (DEBUG_URL) {
+    const token = DEBUG_URL.trim();
+    if (token === DRY_RUN_TOKEN) {
+      await dryRunSources(await loadSources());
+      return;
+    }
+    await withBrowser(async (browser) => {
+      if (token === API_PROBE_TOKEN) await probeApis(browser);
+      else await debugProducts(browser, DEBUG_URL);
+    });
+    return;
+  }
+
+  const sources = await loadSources();
+  if (sources.length === 0) {
+    console.log('No sources configured in config/sources.json — nothing to scrape.');
+    return;
+  }
+
+  const totals = { discovered: 0, recorded: 0, priceChanged: 0, skipped: 0, failed: 0, emptySources: [] };
+  // Shared across every source in this run — see recordExtractedProduct for why.
+  const productRunState = new Map();
+
+  for (const source of sources) {
+    const result = await processSource(source, productRunState);
+    totals.discovered += result.discovered;
+    totals.recorded += result.recorded;
+    totals.priceChanged += result.priceChanged;
+    totals.skipped += result.skipped;
+    totals.failed += result.failed;
+    if (result.discovered === 0) totals.emptySources.push(source.id);
+  }
+
+  console.log(
+    `Done. ${totals.discovered} discovered, ${totals.recorded} recorded ` +
+      `(${totals.priceChanged} with a price change), ${totals.skipped} skipped as duplicates, ${totals.failed} failed.`
+  );
+
+  // A source that discovers nothing is not a "successful run with fewer
+  // products" — it means that brand/gender vanished from the dashboard
+  // without anything failing. Name them and fail the job, so it is noticed
+  // the same day rather than whenever someone happens to look.
+  if (totals.emptySources.length > 0) {
+    console.error(
+      `!! 1件も発見できなかったソース: ${totals.emptySources.join(', ')} — ` +
+        'そのブランド/性別は今回まったく更新されていません。'
+    );
+    process.exitCode = 1;
+  }
+
+  if (totals.discovered > 0 && totals.failed === totals.discovered) {
+    process.exitCode = 1;
   }
 }
 
