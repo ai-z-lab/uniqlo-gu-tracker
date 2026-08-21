@@ -244,6 +244,10 @@
       gap: 0.9rem;
     }
 
+    /* 最終確認の日時。スマホでは日付だけに切り替える(下のメディアクエリ) —
+       「最終確認: 2026年8月21日 21:20」は狭い画面で1行を丸ごと使ってしまう。 */
+    .updated-short { display: none; }
+
     /* --- Card --- */
 
     .card {
@@ -456,6 +460,138 @@
       text-align: center;
       padding: 2.5rem 1rem;
       color: var(--text-muted);
+    }
+
+    /* --- 狭い画面(スマホ・横向き・小型タブレット) ---
+       1商品ずつ縦に並ぶため、40商品でも約9,500px(11画面ぶん)スクロールする
+       必要があった。カード最小幅260pxでは390pxの画面に1列しか入らないため。
+       2列にしたうえで、カード自体も詰める。
+
+       上限を640pxにしているのは、600px前後がいちばん損をしていたため。
+       2列は入るのにカードは大きいままなので、390pxの画面(約4,950px)より
+       ページが長くなっていた(約6,150px)。 */
+    @media (max-width: 640px) {
+      header {
+        padding: 1.1rem 0.9rem 0.6rem;
+      }
+
+      header h1 {
+        font-size: 1.2rem;
+      }
+
+      /* 説明文はスマホでは出さない。ページが何を並べているかは見出し
+         (値下げ/期間限定/カテゴリ)そのものが示しており、この2行のために
+         最初の画面から商品が1行ぶん押し出されるほうが損。 */
+      header p {
+        display: none;
+      }
+
+      main {
+        padding: 0.4rem 0.9rem 2.5rem;
+      }
+
+      .tabs {
+        margin-bottom: 0.6rem;
+      }
+
+      .tabs button {
+        font-size: 0.85rem;
+        padding: 0.4rem 0.5rem;
+      }
+
+      #content {
+        padding-top: 0.9rem;
+      }
+
+      .section {
+        margin-bottom: 1.4rem;
+      }
+
+      .grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.55rem;
+      }
+
+      .card {
+        padding: 0.6rem 0.6rem 0.6rem 0.8rem;
+        border-radius: 10px;
+      }
+
+      /* 幅が半分になるので、商品名とバッジを横に並べると両方潰れる。
+         バッジを上に出して、商品名に横幅を明け渡す。 */
+      .card .top-row {
+        flex-direction: column-reverse;
+        align-items: flex-start;
+        gap: 0.3rem;
+        margin-bottom: 0.35rem;
+      }
+
+      /* 商品名は2行まで。長い名前が1枚だけ縦に伸びると、隣の列との段差が
+         そのまま余白になってしまう。 */
+      .card h2 {
+        font-size: 0.8rem;
+        line-height: 1.3;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      .status-badge,
+      .state-badge,
+      .fact {
+        font-size: 0.6rem;
+      }
+
+      .price-row {
+        margin: 0.35rem 0 0.15rem;
+        flex-wrap: wrap;
+        gap: 0.3rem;
+      }
+
+      .price {
+        font-size: 1.15rem;
+      }
+
+      .was-price,
+      .discount,
+      .delta {
+        font-size: 0.7rem;
+      }
+
+      .end-date,
+      .unconfirmed-note,
+      .updated {
+        font-size: 0.65rem;
+        margin-bottom: 0.2rem;
+      }
+
+      /* 「期間限定価格を確認: 8/15〜」は狭い画面では省く。セクション名で
+         期間限定だと分かり、いつまでかは終了日の行が持っている。周期が
+         2回以上ある商品は、そもそもこの行ではなく周期の一覧が出る。 */
+      .limited-since {
+        display: none;
+      }
+
+      .facts {
+        margin-bottom: 0.25rem;
+      }
+
+      .stage-history {
+        font-size: 0.68rem;
+        line-height: 1.4;
+      }
+
+      .updated-full { display: none; }
+      .updated-short { display: inline; }
+
+      .date-summary {
+        margin-bottom: 0.7rem;
+      }
+
+      .category-group {
+        margin-bottom: 0.9rem;
+      }
     }
 
     footer {
