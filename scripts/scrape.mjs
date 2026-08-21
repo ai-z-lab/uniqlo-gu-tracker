@@ -1527,7 +1527,15 @@ async function debugListingPage(browser, url, outDir) {
   page.on('response', async (response) => {
     try {
       if (!(response.headers()['content-type'] || '').includes('json')) return;
-      captured.push({ url: response.url(), status: response.status(), body: await response.json() });
+      // リクエスト本文も残す。一覧APIを自分から叩けるかどうかは、レスポンスの
+      // 形ではなく「どんなパラメータで呼ばれているか」で決まる。
+      captured.push({
+        url: response.url(),
+        status: response.status(),
+        method: response.request().method(),
+        postData: response.request().postData(),
+        body: await response.json(),
+      });
     } catch {
       // 本文が JSON として読めない／すでに読まれている
     }
@@ -1586,7 +1594,20 @@ async function debugListingPage(browser, url, outDir) {
     );
   }
 
+  // 一番有力な候補だけ、呼び出し方と中身まで踏み込む。一覧APIを直接叩く案が
+  // 成立するかは「パラメータが再現できるか」と「価格まで入っているか」で決まる。
   const best = ranked[0];
+  if (best && best.codes.size > 0) {
+    log(`候補の呼び出し方: ${best.method} ${best.url}`);
+    log(`候補のリクエスト本文: ${best.postData ? best.postData.slice(0, 2_000) : '(なし)'}`);
+    log(`候補の構造:\n${describeJsonShape(best.body, { limit: 60 }).map((line) => `    ${line}`).join('\n')}`);
+    const prices = collectPriceCandidates(best.body, { limit: 30 });
+    log(
+      `候補に含まれる価格らしきフィールド(${prices.length}件):\n` +
+        prices.map((entry) => `    ${entry.path} = ${entry.value}`).join('\n')
+    );
+  }
+
   const summary =
     best && best.codes.size > 0
       ? `一覧API候補: ${best.url} (商品番号 ${best.codes.size}種) / fetch ${plainLinkCount ?? 'n/a'}件 → rendered ${renderedLinkCount ?? 'n/a'}件`
