@@ -1460,17 +1460,159 @@ async function debugSingleProduct(browser, url, outDir, { via = 'direct' } = {})
 // own workflow input because the scrape workflow only forwards debug_url,
 // and adding an input there would mean editing .github/workflows/, which
 // needs a token scope this project's automation does not have.
+// --- Debug mode: render a listing page and dump what it fetches ---
+//
+// 一覧ページは「商品リンクがサーバー側のHTMLに載っている」前提で fetch だけで
+// 済ませている。ところが 2026-08-20 に GU の値下げ一覧(レディース)が2回続けて
+// 0件になり、HTTP 200・リダイレクト無し・1.1MB の HTML に "/products/" が
+// 1つも含まれていなかった。さらに maxProducts が200でも、どの一覧も36件前後で
+// 頭打ちになっている。
+//
+// どちらも「一覧が自分の JavaScript で商品を取りに行っている」なら説明がつく。
+// その取得先を突き止めるために、一覧ページをレンダリングして、ページ自身が
+// 叩いた JSON を全部拾い、商品番号を多く含むものから並べる。
+// DEBUG_URL に listing-api を混ぜると、一覧URLを商品に展開する代わりにこちらが
+// 動く。
+const LISTING_DEBUG_TOKEN = 'listing-api';
+const LISTING_NAV_TIMEOUT_MS = 25_000;
+const LISTING_SETTLE_MS = 3_000;
+const LISTING_SCROLL_PASSES = 8;
+const LISTING_SCROLL_PAUSE_MS = 1_200;
+
+// 商品番号は E + 6桁。JSON が一覧APIかどうかは「本文に商品番号が何種類
+// 入っているか」でほぼ判別できる。
+const PRODUCT_CODE_RE = /E\d{6}/g;
+
+function productCodesIn(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return new Set(text.match(PRODUCT_CODE_RE) ?? []);
+}
+
+function listingSlug(url) {
+  return (
+    url
+      .replace(/^https?:\/\//, '')
+      .replace(/[^A-Za-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 60) || 'listing'
+  );
+}
+
+async function debugListingPage(browser, url, outDir) {
+  await mkdir(outDir, { recursive: true });
+  const trace = [];
+  const log = (line) => {
+    trace.push(line);
+    console.log(`[debug]   ${line}`);
+  };
+
+  // 1) 今の巡回とまったく同じ fetch。何が返ってきているかを先に押さえる。
+  let plainLinkCount = null;
+  try {
+    const response = await fetchHtml(url);
+    const links = extractProductLinks(response.text, url);
+    plainLinkCount = links.length;
+    log(`plain fetch: HTTP ${response.status}, ${response.text.length} bytes, ${links.length} product link(s)`);
+    if (links.length === 0) log(describeEmptyListing(url, response));
+    await writeFile(path.join(outDir, 'listing-fetched.html'), response.text, 'utf-8');
+  } catch (err) {
+    log(`plain fetch FAILED: ${err.message}`);
+  }
+
+  // 2) 同じURLをブラウザで開き、ページ自身が叩いた JSON を全部拾う。商品ページと
+  //    違って商品番号での絞り込みはしない(どの番号が来るかが知りたいことなので)。
+  const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
+  const page = await context.newPage();
+  const captured = [];
+  page.on('response', async (response) => {
+    try {
+      if (!(response.headers()['content-type'] || '').includes('json')) return;
+      captured.push({ url: response.url(), status: response.status(), body: await response.json() });
+    } catch {
+      // 本文が JSON として読めない／すでに読まれている
+    }
+  });
+
+  let renderedLinkCount = null;
+  try {
+    await withTimeout(
+      page.goto(url, { waitUntil: 'domcontentloaded', timeout: LISTING_NAV_TIMEOUT_MS }),
+      LISTING_NAV_TIMEOUT_MS + 2_000,
+      'listing goto'
+    );
+    await page.waitForTimeout(LISTING_SETTLE_MS);
+
+    // 36件で頭打ちなのが「続きは下までスクロールすると読み込まれる」型なのかを
+    // 見るため、末尾まで数回送りながら件数を測り直す。増えなければ別の原因。
+    const counts = [];
+    for (let pass = 0; pass < LISTING_SCROLL_PASSES; pass += 1) {
+      counts.push(await page.evaluate(() => document.querySelectorAll('a[href*="/products/"]').length));
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(LISTING_SCROLL_PAUSE_MS);
+    }
+    counts.push(await page.evaluate(() => document.querySelectorAll('a[href*="/products/"]').length));
+    log(`product links in the rendered DOM after each scroll: ${counts.join(' → ')}`);
+
+    const renderedHtml = await withTimeout(page.content(), CONTENT_TIMEOUT_MS, 'listing page.content');
+    const renderedLinks = extractProductLinks(renderedHtml, url);
+    renderedLinkCount = renderedLinks.length;
+    log(`rendered: ${renderedLinks.length} distinct product link(s) (plain fetch had ${plainLinkCount ?? 'n/a'})`);
+    await writeFile(path.join(outDir, 'listing-rendered.html'), renderedHtml, 'utf-8');
+    await writeFile(path.join(outDir, 'listing-rendered-links.txt'), renderedLinks.join('\n'), 'utf-8');
+  } catch (err) {
+    log(`rendering FAILED: ${err.message}`);
+  } finally {
+    await closeContextSafely(context, log);
+  }
+
+  // 3) 拾った JSON を、含む商品番号の種類数で並べる。一覧APIなら上位に来る。
+  const ranked = captured
+    .map((entry, i) => ({ ...entry, index: i, codes: productCodesIn(entry.body) }))
+    .sort((a, b) => b.codes.size - a.codes.size);
+  log(`captured ${captured.length} JSON response(s)`);
+  const ledger = ranked
+    .slice(0, 20)
+    .map((e) => `    ${e.codes.size} product code(s), HTTP ${e.status}, ${JSON.stringify(e.body).length} bytes — ${e.url}`);
+  if (ledger.length > 0) log(`JSON responses, most product codes first:\n${ledger.join('\n')}`);
+
+  // 商品番号を含むものだけ書き出す。一覧ページは JSON も重いので全部は残さない。
+  const jsonDir = path.join(outDir, 'json');
+  await mkdir(jsonDir, { recursive: true });
+  for (const entry of ranked.filter((e) => e.codes.size > 0).slice(0, 10)) {
+    await writeFile(
+      path.join(jsonDir, `${String(entry.codes.size).padStart(4, '0')}-${entry.index}.json`),
+      JSON.stringify({ url: entry.url, status: entry.status, body: entry.body }, null, 2),
+      'utf-8'
+    );
+  }
+
+  const best = ranked[0];
+  const summary =
+    best && best.codes.size > 0
+      ? `一覧API候補: ${best.url} (商品番号 ${best.codes.size}種) / fetch ${plainLinkCount ?? 'n/a'}件 → rendered ${renderedLinkCount ?? 'n/a'}件`
+      : `商品番号を含むJSONなし / fetch ${plainLinkCount ?? 'n/a'}件 → rendered ${renderedLinkCount ?? 'n/a'}件`;
+  log(summary);
+  await writeFile(path.join(outDir, 'listing-trace.txt'), trace.join('\n'), 'utf-8');
+  return { url, via: 'listing', summary, domPrices: [] };
+}
+
 async function resolveDebugTargets(raw) {
   const tokens = raw.split(/[\s,]+/).map((entry) => entry.trim()).filter(Boolean);
   const sampleToken = tokens.find((token) => /^sample=\d+$/.test(token));
-  const entries = tokens.filter((token) => token !== sampleToken);
+  // listing-api を混ぜると、一覧URLを商品に展開せず、一覧そのものを診断する。
+  const listingApi = tokens.includes(LISTING_DEBUG_TOKEN);
+  const entries = tokens.filter((token) => token !== sampleToken && token !== LISTING_DEBUG_TOKEN);
   const sampleRaw = sampleToken ? sampleToken.slice('sample='.length) : process.env.DEBUG_SAMPLE;
   const sample = Number(sampleRaw) > 0 ? Number(sampleRaw) : 3;
   const targets = [];
 
   for (const entry of entries) {
     if (/\/products\//.test(entry)) {
-      targets.push({ url: entry, via: 'direct' });
+      targets.push({ url: entry, kind: 'product', via: 'direct' });
+      continue;
+    }
+    if (listingApi) {
+      targets.push({ url: entry, kind: 'listing', via: 'direct' });
       continue;
     }
     try {
@@ -1478,7 +1620,7 @@ async function resolveDebugTargets(raw) {
       const links = extractProductLinks(response.text, entry);
       console.log(`[debug] listing ${entry}: discovered ${links.length} product link(s), sampling first ${sample}`);
       if (links.length === 0) console.error(`[debug] ${describeEmptyListing(entry, response)}`);
-      for (const link of links.slice(0, sample)) targets.push({ url: link, via: entry });
+      for (const link of links.slice(0, sample)) targets.push({ url: link, kind: 'product', via: entry });
     } catch (err) {
       console.error(`[debug] failed to expand listing ${entry}: ${err.message}`);
     }
@@ -1500,17 +1642,24 @@ async function debugProducts(browser, raw) {
     console.error('[debug] no debug targets could be resolved from DEBUG_URL');
     return;
   }
-  console.log(`[debug] debugging ${targets.length} product page(s)`);
+  console.log(`[debug] debugging ${targets.length} page(s)`);
 
   const summaries = [];
   for (const [i, target] of targets.entries()) {
-    const code = (target.url.match(/\/products\/([A-Za-z0-9-]+)/) || [])[1] || 'unknown';
+    const isListing = target.kind === 'listing';
+    const label = isListing
+      ? listingSlug(target.url)
+      : (target.url.match(/\/products\/([A-Za-z0-9-]+)/) || [])[1] || 'unknown';
     // A single target keeps writing straight into debug-output/ so the
     // existing "look at debug-output/page.html" workflow is unchanged.
-    const outDir = targets.length === 1 ? rootDir : path.join(rootDir, `${String(i + 1).padStart(2, '0')}-${code}`);
-    console.log(`[debug] === (${i + 1}/${targets.length}) ${target.url}`);
+    const outDir = targets.length === 1 ? rootDir : path.join(rootDir, `${String(i + 1).padStart(2, '0')}-${label}`);
+    console.log(`[debug] === (${i + 1}/${targets.length}) ${isListing ? 'listing ' : ''}${target.url}`);
     try {
-      summaries.push(await debugSingleProduct(browser, target.url, outDir, { via: target.via }));
+      summaries.push(
+        isListing
+          ? await debugListingPage(browser, target.url, outDir)
+          : await debugSingleProduct(browser, target.url, outDir, { via: target.via })
+      );
     } catch (err) {
       console.error(`[debug] ${target.url} failed: ${err.message}`);
       summaries.push({ url: target.url, via: target.via, summary: `FAILED: ${err.message}`, domPrices: [] });
