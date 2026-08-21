@@ -1869,8 +1869,15 @@ async function probeApis(browser) {
     }
     log(`  l2s: HTTP ${l2s.status}`);
     log(`  l2s の構造:\n${describeJsonShape(l2s.body, { limit: 45 }).map((line) => `      ${line}`).join('\n')}`);
-    const l2sDates = collectDateCandidates(l2s.body);
-    log(`  l2s にある日付らしきもの(${l2sDates.length}件): ${JSON.stringify(l2sDates)}`);
+    const l2sDates = collectDateCandidates(l2s.body).slice(0, 6);
+    log(`  l2s にある日付らしきもの(先頭6件): ${JSON.stringify(l2sDates)}`);
+    // priceFlags には値引きの種類の名前が入っているらしい。ここに「期間限定価格」
+    // 「アプリ会員特別価格」等が入っているなら、price_type をサイト自身の表示から
+    // 決められる(いまは remarkdown だけ前回行との比較に頼っている)。
+    const priceFlags = l2s.body?.result?.l2s?.[0]?.flags?.priceFlags ?? null;
+    log(`  l2s[0].flags.priceFlags: ${JSON.stringify(priceFlags)}`);
+    const productFlags = l2s.body?.result?.l2s?.[0]?.flags?.productFlags ?? null;
+    log(`  l2s[0].flags.productFlags: ${JSON.stringify(productFlags)}`);
     await writeFile(
       path.join(rootDir, `probe-${target.brand}-limited-l2s.json`),
       JSON.stringify({ item, l2s: l2s.body }, null, 2),
@@ -1881,17 +1888,19 @@ async function probeApis(browser) {
   // UNIQLO のメンズの genderIds が未確認。items[0].genderName が正解を教えて
   // くれるので、レディースの 1071 の周辺をなめて突き止める。
   log('=== uniqlo genderIds の特定 ===');
-  for (const genderId of [1069, 1070, 1071, 1072, 1073]) {
+  // 1069〜1073 では WOMEN(1071)・男女兼用(1072)・KIDS(1073) しか出ず、MEN が
+  // 見つからなかったので範囲を広げる。0件のIDは黙って飛ばす。
+  const genderSweep = [];
+  for (let id = 1060; id <= 1090; id += 1) genderSweep.push(id);
+  for (const genderId of genderSweep) {
     const search = await postSearch(
       'https://www.uniqlo.com',
       { genderIds: [genderId], flagCodes: ['discount'], offset: 0, limit: 1 },
       'https://www.uniqlo.com/jp/ja/feature/sale/men'
     );
     const item = search.body?.result?.items?.[0];
-    log(
-      `genderIds=[${genderId}]: HTTP ${search.status}, total=${search.body?.result?.pagination?.total ?? null}, ` +
-        `genderName=${JSON.stringify(item?.genderName ?? null)}`
-    );
+    const total = search.body?.result?.pagination?.total ?? 0;
+    if (total > 0) log(`genderIds=[${genderId}]: total=${total}, genderName=${JSON.stringify(item?.genderName ?? null)}`);
     await sleep(REQUEST_DELAY_MS);
   }
 
