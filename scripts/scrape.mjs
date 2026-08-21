@@ -1124,8 +1124,11 @@ function pickPriceFlag(body, accept, log) {
         code: flag.code,
         name: flag?.name ?? null,
         priceType,
-        // 期間限定でない値引き(通常値下げ)には終わりが無いので日付は持たせない。
-        limitedPriceEndDate: priceType === 'limited' ? fromWording ?? fromTime : null,
+        // 終わりがあるのは期間限定だけではない。GUのアプリ会員特別価格も
+        // 「8/27までアプリ会員特別価格」と期限付きで出る。終わりの有無は
+        // 値引きの種類ではなく effectiveTime が持っているので、そちらで決める
+        // (通常値下げは start/end とも0で、自然と日付なしになる)。
+        limitedPriceEndDate: fromWording ?? fromTime,
       };
     }
   }
@@ -1185,7 +1188,7 @@ async function extractViaApi(source, item, log = () => {}) {
     stockStatus: priced.stockStatus,
     inStockSizeCount: priced.inStockSizeCount,
     // 終了日は price_type とは独立に残す。会員価格が期間限定より安くて
-    // price_type が 'member' になっても、その期間限定に終わりがあることは
+    // price_type が 'member' になっても、その値引きに終わりがあることは
     // 変わらないため。
     limitedPriceEndDate: flag?.limitedPriceEndDate ?? null,
   };
