@@ -1617,6 +1617,175 @@ async function debugListingPage(browser, url, outDir) {
   return { url, via: 'listing', summary, domPrices: [] };
 }
 
+// --- Debug mode: can we call the brand APIs ourselves, without a browser? ---
+//
+// 一覧診断で、一覧の中身は POST /api/commerce/v5/ja/products/search から来て
+// いることと、そのリクエスト本文が分かった。一覧APIを直接叩けるなら、
+// 一覧の取りこぼし(8割超)も、商品ページを1件ずつ開いている実行時間も、
+// まとめて解決できる。
+//
+// ただし両サイトとも Akamai Bot Manager が入っている(ページが
+// /HY99HQL_.../ や /h5SsUw9.../ に 201 を返すセンサー送信をしている)ので、
+// ブラウザ無しの素の fetch が通るとは限らない。通るかどうかで取れる手が
+// 変わるため、先に確かめる。
+//
+// 3通りを同じ引数で試して突き合わせる:
+//   1. 素の fetch (今の discoverProductUrls と同じ土俵)
+//   2. ブラウザで一覧ページを開いた後の、そのページの fetch (Cookie あり)
+//   3. 商品個別の l2s API (会員価格・在庫の取得元。ここも直接叩けるか)
+const API_PROBE_TOKEN = 'api-probe';
+
+const API_PROBE_TARGETS = [
+  {
+    brand: 'uniqlo',
+    origin: 'https://www.uniqlo.com',
+    listing: 'https://www.uniqlo.com/jp/ja/feature/sale/women',
+    body: { genderIds: [1071], flagCodes: ['discount'], offset: 0, limit: 36 },
+  },
+  {
+    brand: 'gu',
+    origin: 'https://www.gu-global.com',
+    listing: 'https://www.gu-global.com/jp/ja/feature/sale/women',
+    body: { genderIds: [2256], flagCodes: ['discount'], offset: 0, limit: 36 },
+  },
+];
+
+const searchApiUrl = (origin) => `${origin}/jp/api/commerce/v5/ja/products/search?httpFailure=true`;
+
+const l2sApiUrl = (origin, productId, priceGroup) =>
+  `${origin}/jp/api/commerce/v5/ja/products/${productId}/price-groups/${priceGroup}/l2s` +
+  '?withPrices=true&withStocks=true&includePreviousPrice=false&withMemberPricing=true';
+
+function summarizeSearchBody(body) {
+  const pagination = body?.result?.pagination;
+  const items = body?.result?.items ?? [];
+  return {
+    total: pagination?.total ?? null,
+    count: items.length,
+    items: items.slice(0, 3).map((item) => ({
+      productId: item?.productId,
+      priceGroup: item?.priceGroup,
+      name: item?.name,
+      base: item?.prices?.base?.value ?? null,
+      promo: item?.prices?.promo?.value ?? null,
+      promotionText: item?.promotionText ?? null,
+    })),
+    // 期間限定の一覧を同じAPIから引くには flagCode が要る。集計に候補が
+    // 並んでいるはずなので、そのまま出す。
+    flags: body?.result?.aggregations?.flags ?? null,
+  };
+}
+
+async function probeApis(browser) {
+  const rootDir = path.join(SCRIPT_DIR, '..', 'debug-output');
+  await mkdir(rootDir, { recursive: true });
+  const lines = [];
+  const log = (line) => {
+    lines.push(line);
+    console.log(`[probe] ${line}`);
+  };
+
+  for (const target of API_PROBE_TARGETS) {
+    log(`=== ${target.brand} ===`);
+    const searchUrl = searchApiUrl(target.origin);
+    let firstItem = null;
+
+    // 1. 素の fetch
+    try {
+      const res = await fetch(searchUrl, {
+        method: 'POST',
+        headers: {
+          'User-Agent': USER_AGENT,
+          'Accept-Language': 'ja-JP,ja;q=0.9',
+          'Content-Type': 'application/json',
+          Origin: target.origin,
+          Referer: target.listing,
+        },
+        body: JSON.stringify(target.body),
+      });
+      const text = await res.text();
+      let parsed = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // JSON ではない = ボット判定ページを返された可能性が高い
+      }
+      if (parsed) {
+        const summary = summarizeSearchBody(parsed);
+        firstItem = summary.items[0] ?? null;
+        log(`search via plain fetch: HTTP ${res.status}, total=${summary.total}, items=${summary.count}`);
+        log(`  先頭3件: ${JSON.stringify(summary.items)}`);
+        log(`  aggregations.flags: ${JSON.stringify(summary.flags)}`);
+        await writeFile(path.join(rootDir, `probe-${target.brand}-search.json`), JSON.stringify(parsed, null, 2), 'utf-8');
+      } else {
+        log(`search via plain fetch: HTTP ${res.status}, JSONではない本文 ${text.length} bytes — 先頭200字: ${text.slice(0, 200)}`);
+      }
+    } catch (err) {
+      log(`search via plain fetch: FAILED ${err.message}`);
+    }
+
+    // 2. 一覧ページを開いたブラウザの中から、同じ呼び出し
+    const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
+    const page = await context.newPage();
+    try {
+      await withTimeout(
+        page.goto(target.listing, { waitUntil: 'domcontentloaded', timeout: LISTING_NAV_TIMEOUT_MS }),
+        LISTING_NAV_TIMEOUT_MS + 2_000,
+        'probe goto'
+      );
+      await page.waitForTimeout(LISTING_SETTLE_MS);
+      const viaPage = await page.evaluate(
+        async ([url, body]) => {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const parsed = await res.json().catch(() => null);
+          return { status: res.status, total: parsed?.result?.pagination?.total ?? null, count: parsed?.result?.items?.length ?? null };
+        },
+        [searchUrl, target.body]
+      );
+      log(`search from inside the page: HTTP ${viaPage.status}, total=${viaPage.total}, items=${viaPage.count}`);
+    } catch (err) {
+      log(`search from inside the page: FAILED ${err.message}`);
+    } finally {
+      await closeContextSafely(context, log);
+    }
+
+    // 3. 商品個別の l2s API を素の fetch で
+    if (firstItem?.productId) {
+      const priceGroup = String(firstItem.priceGroup ?? 0).padStart(2, '0');
+      const url = l2sApiUrl(target.origin, firstItem.productId, priceGroup);
+      try {
+        const res = await fetch(url, {
+          headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9', Referer: target.listing },
+        });
+        const text = await res.text();
+        let parsed = null;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          // 同上
+        }
+        const priceCount = parsed?.result?.prices ? Object.keys(parsed.result.prices).length : 0;
+        log(
+          `l2s via plain fetch (${firstItem.productId} / price-group ${priceGroup}): HTTP ${res.status}, ` +
+            `isPriceApiBody=${parsed ? isPriceApiBody(parsed) : 'n/a'}, prices=${priceCount}`
+        );
+        if (!parsed) log(`  JSONではない本文 ${text.length} bytes — 先頭200字: ${text.slice(0, 200)}`);
+        else await writeFile(path.join(rootDir, `probe-${target.brand}-l2s.json`), JSON.stringify(parsed, null, 2), 'utf-8');
+      } catch (err) {
+        log(`l2s via plain fetch: FAILED ${err.message}`);
+      }
+    } else {
+      log('l2s は search が商品を返さなかったため試せませんでした');
+    }
+  }
+
+  await writeFile(path.join(rootDir, 'api-probe.txt'), lines.join('\n'), 'utf-8');
+}
+
 async function resolveDebugTargets(raw) {
   const tokens = raw.split(/[\s,]+/).map((entry) => entry.trim()).filter(Boolean);
   const sampleToken = tokens.find((token) => /^sample=\d+$/.test(token));
@@ -1708,7 +1877,8 @@ async function main() {
 
   try {
     if (DEBUG_URL) {
-      await debugProducts(browser, DEBUG_URL);
+      if (DEBUG_URL.trim() === API_PROBE_TOKEN) await probeApis(browser);
+      else await debugProducts(browser, DEBUG_URL);
       return;
     }
 
