@@ -1656,6 +1656,66 @@ const l2sApiUrl = (origin, productId, priceGroup) =>
   `${origin}/jp/api/commerce/v5/ja/products/${productId}/price-groups/${priceGroup}/l2s` +
   '?withPrices=true&withStocks=true&includePreviousPrice=false&withMemberPricing=true';
 
+// 期間限定の終了日は、いまは商品ページのJSON-LD(priceValidUntil)からしか
+// 取っていない。一覧API+l2s APIに切り替えるなら、終了日がそちらにも入って
+// いなければ、ダッシュボードの「終了」判定と周期の区切りが成立しなくなる。
+// 日付らしきものを総ざらいして確かめる。
+const DATE_LIKE_KEY_RE = /(date|until|end|start|expir|valid|period|term)/i;
+const DATE_LIKE_VALUE_RE = /\d{4}[-/]\d{1,2}[-/]\d{1,2}/;
+
+function collectDateCandidates(obj, { path = '$', depth = 0, out = [], limit = 40 } = {}) {
+  if (out.length >= limit || obj == null || depth > 12) return out;
+  if (Array.isArray(obj)) {
+    obj.forEach((value, i) => collectDateCandidates(value, { path: `${path}[${i}]`, depth: depth + 1, out, limit }));
+    return out;
+  }
+  if (typeof obj !== 'object') return out;
+  for (const [key, value] of Object.entries(obj)) {
+    if (out.length >= limit) break;
+    const childPath = `${path}.${key}`;
+    if (typeof value === 'string' && value.trim() !== '' && (DATE_LIKE_VALUE_RE.test(value) || DATE_LIKE_KEY_RE.test(key))) {
+      out.push({ path: childPath, value });
+    } else if (typeof value === 'number' && DATE_LIKE_KEY_RE.test(key)) {
+      out.push({ path: childPath, value });
+    } else if (value && typeof value === 'object') {
+      collectDateCandidates(value, { path: childPath, depth: depth + 1, out, limit });
+    }
+  }
+  return out;
+}
+
+async function postSearch(origin, body, referer) {
+  const res = await fetch(searchApiUrl(origin), {
+    method: 'POST',
+    headers: {
+      'User-Agent': USER_AGENT,
+      'Accept-Language': 'ja-JP,ja;q=0.9',
+      'Content-Type': 'application/json',
+      Origin: origin,
+      Referer: referer,
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  try {
+    return { status: res.status, body: JSON.parse(text) };
+  } catch {
+    return { status: res.status, body: null, text };
+  }
+}
+
+async function getL2s(origin, productId, priceGroup, referer) {
+  const res = await fetch(l2sApiUrl(origin, productId, priceGroup), {
+    headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9', Referer: referer },
+  });
+  const text = await res.text();
+  try {
+    return { status: res.status, body: JSON.parse(text) };
+  } catch {
+    return { status: res.status, body: null, text };
+  }
+}
+
 function summarizeSearchBody(body) {
   const pagination = body?.result?.pagination;
   const items = body?.result?.items ?? [];
@@ -1781,6 +1841,58 @@ async function probeApis(browser) {
     } else {
       log('l2s は search が商品を返さなかったため試せませんでした');
     }
+  }
+
+  // 期間限定商品では終了日がどこに入っているのか。ここが取れないと、
+  // ダッシュボードの「終了」判定と周期の区切りが成立しない。
+  for (const target of API_PROBE_TARGETS) {
+    log(`=== ${target.brand} / 期間限定(limitedOffer)の終了日 ===`);
+    const search = await postSearch(
+      target.origin,
+      { ...target.body, flagCodes: ['limitedOffer'], limit: 5 },
+      target.listing
+    );
+    const item = search.body?.result?.items?.[0];
+    if (!item) {
+      log(`limitedOffer search: HTTP ${search.status}, 商品を取得できませんでした`);
+      continue;
+    }
+    log(`limitedOffer search: HTTP ${search.status}, total=${search.body?.result?.pagination?.total ?? null}`);
+    log(`  対象: ${item.productId} / price-group ${item.priceGroup} / ${item.name}`);
+    const itemDates = collectDateCandidates(item);
+    log(`  一覧APIの商品側にある日付らしきもの(${itemDates.length}件): ${JSON.stringify(itemDates)}`);
+
+    const l2s = await getL2s(target.origin, item.productId, item.priceGroup, target.listing);
+    if (!l2s.body) {
+      log(`  l2s: HTTP ${l2s.status}, JSONではない本文`);
+      continue;
+    }
+    log(`  l2s: HTTP ${l2s.status}`);
+    log(`  l2s の構造:\n${describeJsonShape(l2s.body, { limit: 45 }).map((line) => `      ${line}`).join('\n')}`);
+    const l2sDates = collectDateCandidates(l2s.body);
+    log(`  l2s にある日付らしきもの(${l2sDates.length}件): ${JSON.stringify(l2sDates)}`);
+    await writeFile(
+      path.join(rootDir, `probe-${target.brand}-limited-l2s.json`),
+      JSON.stringify({ item, l2s: l2s.body }, null, 2),
+      'utf-8'
+    );
+  }
+
+  // UNIQLO のメンズの genderIds が未確認。items[0].genderName が正解を教えて
+  // くれるので、レディースの 1071 の周辺をなめて突き止める。
+  log('=== uniqlo genderIds の特定 ===');
+  for (const genderId of [1069, 1070, 1071, 1072, 1073]) {
+    const search = await postSearch(
+      'https://www.uniqlo.com',
+      { genderIds: [genderId], flagCodes: ['discount'], offset: 0, limit: 1 },
+      'https://www.uniqlo.com/jp/ja/feature/sale/men'
+    );
+    const item = search.body?.result?.items?.[0];
+    log(
+      `genderIds=[${genderId}]: HTTP ${search.status}, total=${search.body?.result?.pagination?.total ?? null}, ` +
+        `genderName=${JSON.stringify(item?.genderName ?? null)}`
+    );
+    await sleep(REQUEST_DELAY_MS);
   }
 
   await writeFile(path.join(rootDir, 'api-probe.txt'), lines.join('\n'), 'utf-8');
