@@ -6,10 +6,12 @@
     "node": ">=22"
   },
   "scripts": {
-    "scrape": "node scrape.mjs"
+    "scrape": "node scrape.mjs",
+    "migrate": "node migrate.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
-    "playwright": "^1.48.0"
+    "playwright": "^1.48.0",
+    "pg": "^8.13.0"
   }
 }

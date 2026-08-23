@@ -177,6 +177,96 @@ Supabase ダッシュボード → 該当プロジェクト → **SQL Editor** �
    — `product_id` に価格グループを含める形へ、既存行を `url` 列から再計算して
    振り直す(定価ラインと処分ラインの取り違えを解消。冪等)
 
+### マイグレーションの自動適用
+
+上記の手作業は初回だけで、以降は **main にマージすれば自動で適用されます**
+(`scripts/migrate.mjs` + `.github/workflows/migrate.yml`)。適用済みかどうかは
+`public.schema_migrations` テーブルに記録され、未適用のものだけが番号順に流れます。
+
+以前は「マイグレーションを先に手で適用してからマージ」という受け渡しを毎回
+していました。適用を忘れたままスクレイパーが走ると、PostgREST が未知の列を
+拒否して**全商品のINSERTが失敗**するため、事故りやすい手順でした。
+
+**セットアップ(1回だけ)**
+
+1. Supabase の Project Settings → Database → Connection string → **Session pooler**
+   の文字列をコピーし、リポジトリの Secrets に `SUPABASE_DB_URL` として追加します。
+   PostgREST 用の `SUPABASE_URL` とは別物(Postgres への直接接続、パスワード入り)です。
+   Transaction pooler ではなく **Session pooler** を使ってください — DDL を
+   トランザクションで流すためです。
+2. `.github/workflows/migrate.yml` を以下の内容で作成します。
+3. **既に手で適用済みのぶんを引き継ぎます。** Actions から `Apply migrations` を
+   手動実行し、`baseline` に「手で適用した最後のファイル名」を入れます
+   (例: `0006_product_id_include_price_group.sql`)。SQLは実行されず、記録だけが
+   入ります。これをやらないと初回に既適用ぶんを流し直してしまいます。
+
+```yaml
+name: Apply migrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/migrations/**"
+      - "scripts/migrate.mjs"
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: "(初回のみ) ここまでを『適用済み』として記録だけする。例: 0006_product_id_include_price_group.sql"
+        required: false
+        type: string
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+
+      - name: Install dependencies
+        working-directory: scripts
+        run: npm ci
+
+      - name: Apply migrations
+        working-directory: scripts
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          # inputs を run: の中に直接展開しない(シェルに解釈されるため)。
+          BASELINE: ${{ inputs.baseline }}
+        run: |
+          if [ -n "$BASELINE" ]; then
+            npm run migrate -- --baseline "$BASELINE"
+          else
+            npm run migrate
+          fi
+```
+
+**マイグレーションを書くときの決まりごと**
+
+- ファイル名の先頭は連番。**その文字列順がそのまま適用順**になります。
+- ファイル内で `BEGIN` / `COMMIT` を書かないでください。1ファイル = 1トランザクション
+  として実行側が囲みます。途中で落ちた場合はロールバックされ、`schema_migrations`
+  にも記録されません(当たっているのに未適用、あるいはその逆の状態を作らないため)。
+- `CREATE INDEX CONCURRENTLY` などトランザクション内で実行できないものは使えません。
+- **適用済みのファイルは編集しないでください。** 内容のSHA-256を記録しているので、
+  書き換えると次回実行時に検出して停止します。既に当たったSQLを書き換えても
+  DBの実態は変わらず、リポジトリとDBが黙って食い違うだけだからです。変更したい
+  場合は新しい番号のマイグレーションを追加してください。
+
+**手元で確認する**
+
+```
+cd scripts
+SUPABASE_DB_URL='...' npm run migrate -- --dry-run   # 何が適用されるかだけ見る
+SUPABASE_DB_URL='...' npm run migrate                 # 適用する
+```
+
 ### 2. スクレイパー用の Secrets を GitHub リポジトリに追加する
 
 Settings → Secrets and variables → Actions → New repository secret で以下を追加:
