@@ -373,6 +373,49 @@
       border: 1px solid currentColor;
     }
 
+    /* 終了・未確認の商品。消さずに残したうえで、現在有効なものと視線の上で
+       はっきり差がつくように落とす。 */
+    .card.offer-over,
+    .card.unconfirmed {
+      opacity: 0.55;
+    }
+
+    .card.offer-over:hover,
+    .card.unconfirmed:hover {
+      opacity: 1;
+    }
+
+    .card.offer-over .price {
+      text-decoration: line-through;
+      text-decoration-thickness: 2px;
+    }
+
+    .state-badge {
+      font-size: 0.68rem;
+      font-weight: 700;
+      line-height: 1.7;
+      padding: 0 0.45rem;
+      border-radius: 999px;
+      white-space: nowrap;
+      flex-shrink: 0;
+      border: 1px solid currentColor;
+    }
+
+    .state-badge.over { color: var(--text); }
+    .state-badge.stale { color: var(--text-muted); }
+
+    .end-date.over {
+      color: var(--text-muted);
+      text-decoration: line-through;
+    }
+
+    .unconfirmed-note {
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      line-height: 1.5;
+      margin-bottom: 0.3rem;
+    }
+
     .fact.member { color: var(--status-limited); }
     .fact.remarkdown { color: var(--down); }
     .fact.sold-out { color: var(--text-muted); }

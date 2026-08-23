@@ -122,6 +122,40 @@ function groupProductsByDate(products, dateOf) {
     .map((g) => ({ label: stageDateFormatter.format(g.date), count: g.count }));
 }
 
+// 値下げ・期間限定はすべて日本時間で回っている(期間限定は金曜開始・木曜終了)。
+// 「今日」も日本時間で判定しないと、日付をまたぐ時間帯に見ている人には
+// 終了済みが有効に見えたり、その逆が起きる。
+function jstDayOf(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+// 期間限定価格が終了しているか。limited_price_end_date は「その日まで有効」
+// なので、終了日そのものはまだ有効。翌日から終了とみなす。
+function isLimitedOfferOver(row, todayJst) {
+  if (!row.limited_price_end_date) return false;
+  return row.limited_price_end_date < todayJst;
+}
+
+// 直近の巡回で確認できなかった商品か。
+//
+// 一覧から外れた商品はスクレイパーが二度と触らないため、最後に記録した行が
+// そのまま残り続ける。「値下げ中」の表示のまま何日でも居座るので、確認できた
+// 最後の日を見て区別する。
+//
+// 基準は固定の日数ではなく「データ全体で最も新しい巡回日」。定期実行が失敗した
+// 日があっても、基準日はその前の成功時のままなので、全商品が一斉に古い扱いに
+// なることはない。
+function lastCrawlDayOf(rows) {
+  let newest = null;
+  for (const row of rows) {
+    const day = jstDayOf(row.scraped_at);
+    if (day && (newest === null || day > newest)) newest = day;
+  }
+  return newest;
+}
+
 function buildIndex(rows) {
   const byProduct = new Map();
   for (const row of rows) {
@@ -129,10 +163,15 @@ function buildIndex(rows) {
     byProduct.get(row.product_id).push(row);
   }
 
+  const todayJst = jstDayOf(new Date());
+  const lastCrawlDay = lastCrawlDayOf(rows);
+
   const idx = {};
   for (const history of byProduct.values()) {
     history.sort((a, b) => new Date(a.scraped_at) - new Date(b.scraped_at));
     const latest = history[history.length - 1];
+    const offerOver = isLimitedOfferOver(latest, todayJst);
+    const unconfirmed = lastCrawlDay !== null && jstDayOf(latest.scraped_at) < lastCrawlDay;
     const brand = latest.brand;
     const gender = latest.gender || "unknown";
     const eventType = latest.event_type || "markdown";
@@ -142,7 +181,7 @@ function buildIndex(rows) {
     idx[brand][gender] ??= {};
     idx[brand][gender][eventType] ??= {};
     idx[brand][gender][eventType][category] ??= [];
-    idx[brand][gender][eventType][category].push({ latest, history });
+    idx[brand][gender][eventType][category].push({ latest, history, offerOver, unconfirmed });
   }
   return idx;
 }
@@ -155,14 +194,16 @@ function categoryOrderFor(brand, categories) {
 }
 
 function renderCard(product) {
-  const { latest, history } = product;
+  const { latest, history, offerOver, unconfirmed } = product;
   const previous = history.length > 1 ? history[history.length - 2] : null;
   const fmt = currencyFormatter(latest.currency);
 
   // The whole card is the product link (click/tap anywhere opens the
   // official product page in a new tab), so it's an <a>, not a <div>.
   const card = document.createElement("a");
-  card.className = "card";
+  // 終了・未確認の商品は消さずに残し、見た目を落として区別する。消してしまうと
+  // 「昨日まで載っていた商品がなぜ消えたのか」が分からなくなるため。
+  card.className = `card${offerOver ? " offer-over" : ""}${unconfirmed && !offerOver ? " unconfirmed" : ""}`;
   card.href = latest.url;
   card.target = "_blank";
   card.rel = "noopener noreferrer";
@@ -192,6 +233,20 @@ function renderCard(product) {
         ? `${eventConfig.label}(${stagePoints.length}段階目)`
         : eventConfig.label;
     topRow.appendChild(badge);
+  }
+
+  // 期間限定が終了日を過ぎている場合は、それを最優先で伝える。価格行はもう
+  // 現在の価格ではないため。
+  if (offerOver) {
+    const over = document.createElement("span");
+    over.className = "state-badge over";
+    over.textContent = "終了";
+    topRow.appendChild(over);
+  } else if (unconfirmed) {
+    const stale = document.createElement("span");
+    stale.className = "state-badge stale";
+    stale.textContent = "未確認";
+    topRow.appendChild(stale);
   }
   card.appendChild(topRow);
 
@@ -263,9 +318,18 @@ function renderCard(product) {
   const endDateText = formatLimitedPriceEndDate(latest.limited_price_end_date);
   if (endDateText) {
     const endDate = document.createElement("div");
-    endDate.className = "end-date";
-    endDate.textContent = endDateText;
+    endDate.className = `end-date${offerOver ? " over" : ""}`;
+    endDate.textContent = offerOver ? `${endDateText}(終了)` : endDateText;
     card.appendChild(endDate);
+  }
+
+  if (unconfirmed) {
+    const note = document.createElement("div");
+    note.className = "unconfirmed-note";
+    // 一覧から外れた商品はスクレイパーが二度と触らないので、この価格が今も
+    // 有効とは限らない。最後に確認できた日を添える。
+    note.textContent = `直近の巡回では確認できませんでした(最終確認 ${stageDateFormatter.format(new Date(latest.scraped_at))})`;
+    card.appendChild(note);
   }
 
   if (isLimitedFamily) {
@@ -349,12 +413,20 @@ function appendProductGroup(section, labelText, products) {
   group.className = "category-group";
 
   const h3 = document.createElement("h3");
-  h3.textContent = `${labelText}(${products.length})`;
+  const overCount = products.filter((p) => p.offerOver).length;
+  // 「12件」のうち何件がもう終わっているのかが見出しで分かるようにする。
+  h3.textContent = overCount > 0
+    ? `${labelText}(${products.length}) — うち終了 ${overCount}`
+    : `${labelText}(${products.length})`;
   group.appendChild(h3);
 
   const grid = document.createElement("div");
   grid.className = "grid";
-  for (const product of products) {
+  // 有効なものを先に、終了・未確認を後ろへ。並び順以外は元の順序を保つ。
+  const ordered = [...products].sort(
+    (a, b) => (a.offerOver ? 2 : a.unconfirmed ? 1 : 0) - (b.offerOver ? 2 : b.unconfirmed ? 1 : 0)
+  );
+  for (const product of ordered) {
     try {
       grid.appendChild(renderCard(product));
     } catch (err) {
@@ -388,6 +460,12 @@ function renderContent() {
     if (categories.length === 0) continue;
 
     const total = categories.reduce((sum, c) => sum + byCategory[c].length, 0);
+    // セクション見出しの件数が最初に目に入る数字なので、そのうち何件が
+    // すでに終了しているのかをここでも示す。
+    const overTotal = categories.reduce(
+      (sum, c) => sum + byCategory[c].filter((p) => p.offerOver).length,
+      0
+    );
 
     const section = document.createElement("section");
     section.className = "section";
@@ -400,7 +478,7 @@ function renderContent() {
     label.textContent = eventConfig.label;
     const count = document.createElement("span");
     count.className = "count";
-    count.textContent = `${total}件`;
+    count.textContent = overTotal > 0 ? `${total}件(うち終了 ${overTotal})` : `${total}件`;
     header.appendChild(label);
     header.appendChild(count);
     section.appendChild(header);
