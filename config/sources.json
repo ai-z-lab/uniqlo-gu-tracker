@@ -5,8 +5,8 @@
     "gender": "women",
     "listingType": "sale",
     "label": "UNIQLO 値下げ商品(レディース)",
-    "urls": ["https://www.uniqlo.com/jp/ja/feature/sale/women"],
-    "maxProducts": 200
+    "api": { "genderIds": [1071], "flagCodes": ["discount"] },
+    "maxProducts": 600
   },
   {
     "id": "uniqlo-sale-men",
@@ -14,8 +14,8 @@
     "gender": "men",
     "listingType": "sale",
     "label": "UNIQLO 値下げ商品(メンズ)",
-    "urls": ["https://www.uniqlo.com/jp/ja/feature/sale/men"],
-    "maxProducts": 200
+    "api": { "genderIds": [1072], "flagCodes": ["discount"] },
+    "maxProducts": 600
   },
   {
     "id": "uniqlo-limited-women",
@@ -23,8 +23,8 @@
     "gender": "women",
     "listingType": "limited",
     "label": "UNIQLO 期間限定価格(レディース)",
-    "urls": ["https://www.uniqlo.com/jp/ja/feature/limited-offers/women"],
-    "maxProducts": 200
+    "api": { "genderIds": [1071], "flagCodes": ["limitedOffer"] },
+    "maxProducts": 600
   },
   {
     "id": "uniqlo-limited-men",
@@ -32,8 +32,8 @@
     "gender": "men",
     "listingType": "limited",
     "label": "UNIQLO 期間限定価格(メンズ)",
-    "urls": ["https://www.uniqlo.com/jp/ja/feature/limited-offers/men"],
-    "maxProducts": 200
+    "api": { "genderIds": [1072], "flagCodes": ["limitedOffer"] },
+    "maxProducts": 600
   },
   {
     "id": "gu-sale-women",
@@ -41,8 +41,8 @@
     "gender": "women",
     "listingType": "sale",
     "label": "GU 値下げ商品(レディース)",
-    "urls": ["https://www.gu-global.com/jp/ja/feature/sale/women"],
-    "maxProducts": 200
+    "api": { "genderIds": [2256], "flagCodes": ["discount"] },
+    "maxProducts": 600
   },
   {
     "id": "gu-sale-men",
@@ -50,8 +50,8 @@
     "gender": "men",
     "listingType": "sale",
     "label": "GU 値下げ商品(メンズ)",
-    "urls": ["https://www.gu-global.com/jp/ja/feature/sale/men"],
-    "maxProducts": 200
+    "api": { "genderIds": [2257], "flagCodes": ["discount"] },
+    "maxProducts": 600
   },
   {
     "id": "gu-limited-women",
@@ -59,8 +59,8 @@
     "gender": "women",
     "listingType": "limited",
     "label": "GU 期間限定価格(レディース)",
-    "urls": ["https://www.gu-global.com/jp/ja/feature/limited-offers/women"],
-    "maxProducts": 200
+    "api": { "genderIds": [2256], "flagCodes": ["limitedOffer"] },
+    "maxProducts": 600
   },
   {
     "id": "gu-limited-men",
@@ -68,7 +68,25 @@
     "gender": "men",
     "listingType": "limited",
     "label": "GU 期間限定価格(メンズ)",
-    "urls": ["https://www.gu-global.com/jp/ja/feature/limited-offers/men"],
-    "maxProducts": 200
+    "api": { "genderIds": [2257], "flagCodes": ["limitedOffer"] },
+    "maxProducts": 600
+  },
+  {
+    "id": "gu-appmember-women",
+    "brand": "gu",
+    "gender": "women",
+    "listingType": "limited",
+    "label": "GU アプリ会員特別価格(レディース)",
+    "api": { "genderIds": [2256], "flagCodes": ["appmemberLimited"] },
+    "maxProducts": 600
+  },
+  {
+    "id": "gu-appmember-men",
+    "brand": "gu",
+    "gender": "men",
+    "listingType": "limited",
+    "label": "GU アプリ会員特別価格(メンズ)",
+    "api": { "genderIds": [2257], "flagCodes": ["appmemberLimited"] },
+    "maxProducts": 600
   }
 ]
