@@ -445,7 +445,17 @@ function renderCard(product) {
 
   const updated = document.createElement("div");
   updated.className = "updated";
-  updated.textContent = `最終確認: ${dateFormatter.format(new Date(latest.scraped_at))}`;
+  // 同じ情報を長短2通り持たせ、どちらを出すかは幅に応じてCSSが決める。
+  // スマホでは「最終確認: 2026年8月21日 21:20」が1行を丸ごと使ってしまう。
+  const scrapedAt = new Date(latest.scraped_at);
+  const updatedFull = document.createElement("span");
+  updatedFull.className = "updated-full";
+  updatedFull.textContent = `最終確認: ${dateFormatter.format(scrapedAt)}`;
+  const updatedShort = document.createElement("span");
+  updatedShort.className = "updated-short";
+  updatedShort.textContent = `確認 ${stageDateFormatter.format(scrapedAt)}`;
+  updated.appendChild(updatedFull);
+  updated.appendChild(updatedShort);
   card.appendChild(updated);
 
   // 価格の推移は折れ線ではなく文字で出す。期間限定は終わると価格が戻るため、
