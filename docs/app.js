@@ -486,31 +486,56 @@ function appendDateSummary(section, entries) {
 }
 
 function appendProductGroup(section, labelText, products) {
-  const group = document.createElement("div");
+  // <details>/<summary> をそのまま使う。開閉の状態・キーボード操作・スクリーン
+  // リーダーへの伝わり方が標準で付いてくるので、自前で真似しない。
+  const group = document.createElement("details");
   group.className = "category-group";
 
-  const h3 = document.createElement("h3");
+  const summary = document.createElement("summary");
   const overCount = products.filter((p) => p.offerOver).length;
-  // 「12件」のうち何件がもう終わっているのかが見出しで分かるようにする。
-  h3.textContent = overCount > 0
-    ? `${labelText}(${products.length}) — うち終了 ${overCount}`
-    : `${labelText}(${products.length})`;
-  group.appendChild(h3);
+
+  const label = document.createElement("span");
+  label.className = "group-label";
+  label.textContent = labelText;
+  summary.appendChild(label);
+
+  const count = document.createElement("span");
+  count.className = "group-count";
+  count.textContent = `${products.length}件`;
+  summary.appendChild(count);
+
+  // 「12件」のうち何件がもう終わっているのかが、開かなくても分かるようにする。
+  if (overCount > 0) {
+    const over = document.createElement("span");
+    over.className = "group-over";
+    over.textContent = `うち終了 ${overCount}`;
+    summary.appendChild(over);
+  }
+  group.appendChild(summary);
 
   const grid = document.createElement("div");
   grid.className = "grid";
-  // 有効なものを先に、終了・未確認を後ろへ。並び順以外は元の順序を保つ。
-  const ordered = [...products].sort(
-    (a, b) => (a.offerOver ? 2 : a.unconfirmed ? 1 : 0) - (b.offerOver ? 2 : b.unconfirmed ? 1 : 0)
-  );
-  for (const product of ordered) {
-    try {
-      grid.appendChild(renderCard(product));
-    } catch (err) {
-      console.error(`failed to render card for ${product.latest.product_id}`, err);
-    }
-  }
   group.appendChild(grid);
+
+  // 閉じている間はカードを作らない。全カテゴリぶんを最初に組み立てると1,000件
+  // 超のカードがDOMに載るが、実際に開かれるのはそのうちのごく一部。初めて
+  // 開かれた時に一度だけ描く。
+  let rendered = false;
+  group.addEventListener("toggle", () => {
+    if (!group.open || rendered) return;
+    rendered = true;
+    // 有効なものを先に、終了・未確認を後ろへ。並び順以外は元の順序を保つ。
+    const ordered = [...products].sort(
+      (a, b) => (a.offerOver ? 2 : a.unconfirmed ? 1 : 0) - (b.offerOver ? 2 : b.unconfirmed ? 1 : 0)
+    );
+    for (const product of ordered) {
+      try {
+        grid.appendChild(renderCard(product));
+      } catch (err) {
+        console.error(`failed to render card for ${product.latest.product_id}`, err);
+      }
+    }
+  });
 
   section.appendChild(group);
 }
