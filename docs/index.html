@@ -226,16 +226,86 @@
       white-space: nowrap;
     }
 
+    /* カテゴリは <details> で、初期状態は閉じたまま。件数が1,000件を超えると
+       全部を積み上げた縦長のページはもう読めないので、まず見出しと件数だけを
+       並べて、必要なところだけ開いてもらう。 */
     .category-group {
-      margin-bottom: 1.4rem;
+      margin-bottom: 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
     }
 
-    .category-group h3 {
+    .category-group > summary {
+      display: flex;
+      align-items: baseline;
+      gap: 0.7rem;
+      /* 行そのものが押せる範囲。指で押しやすいよう縦に余裕を持たせる。 */
+      padding: 0.7rem 0.9rem;
+      cursor: pointer;
       font-size: 0.85rem;
       font-weight: 700;
+      color: var(--text);
+      border-radius: 10px;
+      list-style: none;
+      user-select: none;
+    }
+
+    /* 既定の三角は Safari と Chrome で見え方が違うので消して、自前の
+       シェブロンに置き換える。 */
+    .category-group > summary::-webkit-details-marker { display: none; }
+
+    .category-group > summary::before {
+      content: "";
+      flex-shrink: 0;
+      width: 0.42rem;
+      height: 0.42rem;
+      border-right: 2px solid var(--text-muted);
+      border-bottom: 2px solid var(--text-muted);
+      transform: rotate(-45deg);
+      transition: transform 0.15s;
+      align-self: center;
+    }
+
+    .category-group[open] > summary::before {
+      transform: rotate(45deg);
+    }
+
+    .category-group > summary:hover {
+      background: var(--tab-hover);
+    }
+
+    .category-group > summary:focus-visible {
+      outline: 2px solid var(--text);
+      outline-offset: -2px;
+    }
+
+    .category-group .group-label {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .group-count {
+      flex-shrink: 0;
       color: var(--text-muted);
-      margin: 0 0 0.6rem;
-      padding-left: 0.1rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .group-over {
+      flex-shrink: 0;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--text-muted);
+    }
+
+    .category-group[open] > summary {
+      border-bottom: 1px solid var(--border);
+      border-radius: 10px 10px 0 0;
+    }
+
+    .category-group > .grid {
+      padding: 0.8rem 0.9rem 0.9rem;
     }
 
     .grid {
@@ -590,7 +660,16 @@
       }
 
       .category-group {
-        margin-bottom: 0.9rem;
+        margin-bottom: 0.4rem;
+      }
+
+      .category-group > summary {
+        padding: 0.65rem 0.7rem;
+        font-size: 0.8rem;
+      }
+
+      .category-group > .grid {
+        padding: 0.6rem 0.6rem 0.7rem;
       }
     }
 
