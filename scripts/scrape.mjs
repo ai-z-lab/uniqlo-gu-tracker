@@ -2173,6 +2173,80 @@ async function probeApis(browser) {
   await writeFile(path.join(rootDir, 'api-probe.txt'), lines.join('\n'), 'utf-8');
 }
 
+// --- Debug mode: what does the dashboard's own query actually return? ---
+//
+// スクレイプが成功して行も書けているのに、公開サイトに新しい日付が出てこない
+// ことがあった。書き込み側ではなく読み出し側を疑うための調査。
+//
+// docs/app.js のクエリは limit も range も付けずに scraped_at の昇順で取って
+// いる。PostgREST には返却行数の上限があるので、上限に達すると「いちばん古い
+// N件」だけが返り、新しい日付は永久に見えなくなる。実際に同じキー・同じ
+// クエリを投げて、総行数・返ってきた行数・日付の範囲を突き合わせる。
+const DASHBOARD_PROBE_TOKEN = 'dashboard-probe';
+
+const jstDay = (iso) => new Date(new Date(iso).getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+async function probeDashboardQuery() {
+  const { SUPABASE_URL: url, SUPABASE_PUBLISHABLE_KEY: key } = await import(
+    new URL('../docs/config.js', import.meta.url)
+  );
+  const headers = { apikey: key, Authorization: `Bearer ${key}` };
+
+  // 1) テーブルの実際の総行数。Content-Range の分母で返ってくる。
+  const countRes = await fetch(`${url}/rest/v1/price_events?select=id&limit=1`, {
+    headers: { ...headers, Prefer: 'count=exact' },
+  });
+  console.log(`[probe] 総行数 (Content-Range): ${countRes.headers.get('content-range')}`);
+
+  // 2) docs/app.js とまったく同じクエリ。limit も range も付けない。
+  const res = await fetch(`${url}/rest/v1/price_events?select=product_id,scraped_at&order=scraped_at.asc`, {
+    headers,
+  });
+  const rows = await res.json();
+  if (!Array.isArray(rows)) {
+    console.log(`[probe] 想定外の応答: ${JSON.stringify(rows).slice(0, 300)}`);
+    return;
+  }
+  const days = [...new Set(rows.map((r) => jstDay(r.scraped_at)))].sort();
+  console.log(`[probe] ダッシュボードと同じクエリで返ってきた行数: ${rows.length}`);
+  console.log(`[probe] その行が持つ日付(JST): ${days.join(', ')}`);
+  console.log(`[probe] 最も古い行: ${rows[0]?.scraped_at} / 最も新しい行: ${rows[rows.length - 1]?.scraped_at}`);
+
+  // 3) 逆順にすると何が見えるか。上限で切られているなら、こちらには新しい日付が出る。
+  const desc = await fetch(
+    `${url}/rest/v1/price_events?select=product_id,scraped_at&order=scraped_at.desc&limit=1`,
+    { headers }
+  );
+  const newest = await desc.json();
+  console.log(`[probe] テーブル上で実際に最も新しい行: ${newest?.[0]?.scraped_at}`);
+
+  // 4) 修正後の読み方(35日窓・降順・1,000行ずつページング)で何が取れるか。
+  //    docs/app.js の fetchPriceEvents と同じ手順を、同じキーで実データに当てる。
+  const pageSize = 1000;
+  const windowDays = 35;
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+  const paged = [];
+  for (let from = 0; from < 30000; from += pageSize) {
+    const pageRes = await fetch(
+      `${url}/rest/v1/price_events?select=product_id,scraped_at` +
+        `&scraped_at=gte.${encodeURIComponent(since)}&order=scraped_at.desc`,
+      { headers: { ...headers, Range: `${from}-${from + pageSize - 1}`, 'Range-Unit': 'items' } }
+    );
+    const page = await pageRes.json();
+    if (!Array.isArray(page)) {
+      console.log(`[probe] ページング中に想定外の応答: ${JSON.stringify(page).slice(0, 200)}`);
+      break;
+    }
+    paged.push(...page);
+    if (page.length < pageSize) break;
+  }
+  const pagedDays = [...new Set(paged.map((r) => jstDay(r.scraped_at)))].sort();
+  console.log(`[probe] --- 修正後の読み方 ---`);
+  console.log(`[probe] ページングで返ってきた行数: ${paged.length}`);
+  console.log(`[probe] その行が持つ日付(JST): ${pagedDays.join(', ')}`);
+  console.log(`[probe] 最も新しい行: ${paged[0]?.scraped_at}`);
+}
+
 async function resolveDebugTargets(raw) {
   const tokens = raw.split(/[\s,]+/).map((entry) => entry.trim()).filter(Boolean);
   const sampleToken = tokens.find((token) => /^sample=\d+$/.test(token));
@@ -2328,6 +2402,10 @@ async function main() {
     const token = DEBUG_URL.trim();
     if (token === DRY_RUN_TOKEN) {
       await dryRunSources(await loadSources());
+      return;
+    }
+    if (token === DASHBOARD_PROBE_TOKEN) {
+      await probeDashboardQuery();
       return;
     }
     await withBrowser(async (browser) => {

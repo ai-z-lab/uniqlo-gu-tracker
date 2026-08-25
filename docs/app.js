@@ -667,13 +667,52 @@ genderTabsEl.addEventListener("click", (e) => {
   renderContent();
 });
 
+const PRICE_EVENT_COLUMNS =
+  "product_id, product_name, brand, gender, category, event_type, url, price, list_price, currency, price_type, stock_status, in_stock_size_count, scraped_at, limited_price_end_date";
+
+// PostgREST は1リクエストで返す行数に上限を持っていて、超えた分は
+// エラーにならず黙って切り捨てられる。このプロジェクトの上限は1,000行。
+//
+// 2026-08-25 に実際にこれで壊れていた。上限を付けずに scraped_at の昇順で
+// 取っていたため、全3,057行のうち「いちばん古い1,000行」(8/15〜8/22)だけが
+// 返り、8/23以降が丸ごと見えなくなっていた。巡回は毎朝成功して書き込めて
+// いたのに、公開サイトだけが数日前で止まって見えていた。
+//
+// range で最後まで辿る。降順で取るのは失敗の仕方を変えるため — 何かの理由で
+// 全件を取り切れなくても、欠けるのは古い履歴であって現在の価格ではない。
+// buildIndex は商品ごとに時系列へ並べ直すので、渡す順序は問わない。
+const PAGE_SIZE = 1000;
+// 1日あたり約900行増えるため、無制限に読むと表示までの待ち時間と通信量が
+// 際限なく伸びる。値下げの段階も期間限定の周期もこの範囲に収まる。
+const HISTORY_WINDOW_DAYS = 35;
+// 窓を広げすぎた時の保険。ここに達したら、黙って切り捨てず気づけるようにする。
+const MAX_ROWS = 30000;
+
+async function fetchPriceEvents() {
+  const since = new Date(Date.now() - HISTORY_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const rows = [];
+
+  for (let from = 0; from < MAX_ROWS; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("price_events")
+      .select(PRICE_EVENT_COLUMNS)
+      .gte("scraped_at", since)
+      .order("scraped_at", { ascending: false })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) return { rows: null, error };
+    rows.push(...data);
+    // 1ページ分に満たなければ、そこが最後。
+    if (data.length < PAGE_SIZE) return { rows, error: null };
+  }
+
+  console.warn(
+    `price_events: ${MAX_ROWS}行の上限に達しました。これより古い履歴は読み込んでいません。`
+  );
+  return { rows, error: null };
+}
+
 async function main() {
-  const { data, error } = await supabase
-    .from("price_events")
-    .select(
-      "product_id, product_name, brand, gender, category, event_type, url, price, list_price, currency, price_type, stock_status, in_stock_size_count, scraped_at, limited_price_end_date"
-    )
-    .order("scraped_at", { ascending: true });
+  const { rows: data, error } = await fetchPriceEvents();
 
   if (error) {
     statusEl.textContent = `データの読み込みに失敗しました: ${error.message}`;
