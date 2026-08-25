@@ -2219,6 +2219,32 @@ async function probeDashboardQuery() {
   );
   const newest = await desc.json();
   console.log(`[probe] テーブル上で実際に最も新しい行: ${newest?.[0]?.scraped_at}`);
+
+  // 4) 修正後の読み方(35日窓・降順・1,000行ずつページング)で何が取れるか。
+  //    docs/app.js の fetchPriceEvents と同じ手順を、同じキーで実データに当てる。
+  const pageSize = 1000;
+  const windowDays = 35;
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+  const paged = [];
+  for (let from = 0; from < 30000; from += pageSize) {
+    const pageRes = await fetch(
+      `${url}/rest/v1/price_events?select=product_id,scraped_at` +
+        `&scraped_at=gte.${encodeURIComponent(since)}&order=scraped_at.desc`,
+      { headers: { ...headers, Range: `${from}-${from + pageSize - 1}`, 'Range-Unit': 'items' } }
+    );
+    const page = await pageRes.json();
+    if (!Array.isArray(page)) {
+      console.log(`[probe] ページング中に想定外の応答: ${JSON.stringify(page).slice(0, 200)}`);
+      break;
+    }
+    paged.push(...page);
+    if (page.length < pageSize) break;
+  }
+  const pagedDays = [...new Set(paged.map((r) => jstDay(r.scraped_at)))].sort();
+  console.log(`[probe] --- 修正後の読み方 ---`);
+  console.log(`[probe] ページングで返ってきた行数: ${paged.length}`);
+  console.log(`[probe] その行が持つ日付(JST): ${pagedDays.join(', ')}`);
+  console.log(`[probe] 最も新しい行: ${paged[0]?.scraped_at}`);
 }
 
 async function resolveDebugTargets(raw) {
