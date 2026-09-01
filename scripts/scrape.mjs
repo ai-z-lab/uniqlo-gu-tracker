@@ -1227,13 +1227,22 @@ async function fetchLatestRecordedPrice(productId) {
   return data?.[0] ?? null;
 }
 
-// Same UTC calendar day, i.e. was the last row for this product recorded on
-// today's date already? Used to collapse re-runs (manual re-triggers,
-// testing, etc.) onto a single row per product per day instead of piling up
-// multiple same-day points that make the price-history chart look jagged
-// for no real reason.
-function isSameUtcCalendarDay(isoA, isoB) {
-  return isoA.slice(0, 10) === isoB.slice(0, 10);
+const jstDay = (iso) => new Date(new Date(iso).getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+// Same JST calendar day, i.e. was the last row for this product recorded on
+// today's date already? Used to collapse re-runs (manual re-triggers, the
+// second scheduled run of the day, testing) onto a single row per product per
+// day instead of piling up multiple same-day points that make the price
+// history look jagged for no real reason.
+//
+// 暦日は日本時間で切る。値下げも期間限定価格も日本時間で入れ替わり、
+// ダッシュボード側の日付集計(docs/app.js の jstDayOf)も日本時間なので、
+// ここだけ UTC で切ると境界がずれる。UTC の日付境界は 09:00 JST に来るため、
+// 09:00 をまたいだ2回の巡回が「別の日」と判定され、同じ日の同じ商品に
+// 2行できてしまう。scrape.yml のスケジュールは1日2回あり、Actions の遅延で
+// 片方が 09:00 JST を越えることは普通に起きる。
+function isSameJstCalendarDay(isoA, isoB) {
+  return jstDay(isoA) === jstDay(isoB);
 }
 
 // 再値下げ — a 期間限定価格 stacked on top of a product that was *already*
@@ -1273,7 +1282,7 @@ function applyRemarkdown(priceType, previousPriceType, log = () => {}) {
 // first price drop. Price history for the sparkline chart is a side benefit
 // of the same rows. If a row for this product already exists from *today*,
 // it is updated in place rather than inserted again (see
-// isSameUtcCalendarDay) so repeated runs on the same day don't create
+// isSameJstCalendarDay) so repeated runs on the same day don't create
 // multiple points on the same day.
 //
 // `productRunState` is shared across the *entire* run (every source), not
@@ -1337,7 +1346,7 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     previousPrice = latest?.price ?? null;
     previousCurrency = latest?.currency ?? null;
     previousPriceType = previousPriceTypeOf(latest);
-    existingRowId = latest && isSameUtcCalendarDay(latest.scraped_at, nowIso) ? latest.id : null;
+    existingRowId = latest && isSameJstCalendarDay(latest.scraped_at, nowIso) ? latest.id : null;
   }
 
   // Read off the page, then refined against this product's own history.
@@ -2183,8 +2192,6 @@ async function probeApis(browser) {
 // N件」だけが返り、新しい日付は永久に見えなくなる。実際に同じキー・同じ
 // クエリを投げて、総行数・返ってきた行数・日付の範囲を突き合わせる。
 const DASHBOARD_PROBE_TOKEN = 'dashboard-probe';
-
-const jstDay = (iso) => new Date(new Date(iso).getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 async function probeDashboardQuery() {
   const { SUPABASE_URL: url, SUPABASE_PUBLISHABLE_KEY: key } = await import(
