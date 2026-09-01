@@ -170,6 +170,49 @@
       color: var(--surface);
     }
 
+    /* 並べ方の切り替え。ブランド・性別より一段弱い扱いにする — 何を見るかを
+       決めるのは上の2つで、これはその中の並べ方でしかない。全幅のタブ列を
+       もう1段積むとスマホの縦幅を食うので、小さく右に寄せる。 */
+    .group-toggle {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.3rem;
+      margin-bottom: 0.8rem;
+    }
+
+    .group-toggle button {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 0.25rem 0.7rem;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background-color 0.15s, color 0.15s;
+    }
+
+    .group-toggle button:hover:not(.active) {
+      background: var(--tab-hover);
+      color: var(--text);
+    }
+
+    .group-toggle button:focus-visible {
+      outline: 2px solid var(--text);
+      outline-offset: 2px;
+    }
+
+    /* 選択中は塗りつぶして文字色を反転させる。背景同士の明度差で示そうとすると
+       --surface も --tab-hover も土台との差が 1.2:1 以下しか無く、PR #12 で
+       直したのと同じ「選択が見分けられない」状態になる。塗り + 反転なら
+       どちらのテーマでも 13:1 以上になる。 */
+    .group-toggle button.active {
+      background: var(--text);
+      border-color: var(--text);
+      color: var(--bg);
+    }
+
     /* --- Brand-colored content frame: everything below the tabs is washed
        in the active brand's color via this top accent bar + left rule, so
        "which brand am I looking at" never depends on remembering the tab
@@ -791,6 +834,10 @@
     <div class="tabs gender-tabs" id="gender-tabs">
       <button type="button" data-gender="men">MEN</button>
       <button type="button" data-gender="women">WOMEN</button>
+    </div>
+    <div class="group-toggle" id="group-tabs" role="group" aria-label="並べ方">
+      <button type="button" data-groupby="date">日付順</button>
+      <button type="button" data-groupby="category">カテゴリ順</button>
     </div>
 
     <div id="status">読み込み中…</div>

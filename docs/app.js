@@ -7,6 +7,7 @@ const statusEl = document.getElementById("status");
 const contentEl = document.getElementById("content");
 const brandTabsEl = document.getElementById("brand-tabs");
 const genderTabsEl = document.getElementById("gender-tabs");
+const groupTabsEl = document.getElementById("group-tabs");
 
 const BRAND_CONFIG = {
   uniqlo: { label: "UNIQLO", color: "var(--brand-uniqlo)" },
@@ -32,7 +33,7 @@ const CATEGORY_ORDER = {
   gu: ["トップス", "アウター・パンツ", "ワンピース", "グッズ・その他"],
 };
 
-let state = { brand: "uniqlo", gender: "men" };
+let state = { brand: "uniqlo", gender: "men", groupBy: "date" };
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
 
 const currencyFormatter = (currency) =>
@@ -102,6 +103,22 @@ const shortEndDateFormatter = new Intl.DateTimeFormat("ja-JP", {
   day: "numeric",
   timeZone: "UTC",
 });
+
+// 曜日を添えるのは、値下げも期間限定も曜日で回っているため — 通常値下げは
+// 火曜、期間限定は金曜開始・木曜終了。日付だけだと、その日が周期のどこに
+// あたるのかが読み取れない。
+const weekdayFormatter = new Intl.DateTimeFormat("ja-JP", { weekday: "short", timeZone: "Asia/Tokyo" });
+const weekdayUtcFormatter = new Intl.DateTimeFormat("ja-JP", { weekday: "short", timeZone: "UTC" });
+
+// e.g. "8/25(火)"。scraped_at は時刻を持つので日本時間で、
+// limited_price_end_date は日付だけなので UTC として読む。
+function formatDayWithWeekday(value, { plainDate = false } = {}) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const day = plainDate ? shortEndDateFormatter : stageDateFormatter;
+  const weekday = plainDate ? weekdayUtcFormatter : weekdayFormatter;
+  return `${day.format(date)}(${weekday.format(date)})`;
+}
 
 // e.g. "¥1,990(7/8)→¥1,290(7/13)→¥990(7/28)→¥790(8/18)"
 function formatMarkdownStageHistory(points) {
@@ -560,6 +577,65 @@ function appendDateSummary(section, entries) {
   section.appendChild(summary);
 }
 
+// --- 日付でまとめる ---
+//
+// 「その日に何が値下げされたか」を出すのが、このダッシュボードのいちばんの
+// 用途。従来は日付をチップで件数だけ示していて、そこから商品にたどり着く
+// 手段が無かった。日付そのものを見出しにする。
+
+// 値下げ商品の「その価格になった日」。値下げ段階の最後の点がそれにあたる
+// (同じ価格で再観測された行は段階にまとめられているため、初めてその価格が
+// 観測された日が出る)。
+function markdownDateOf(product) {
+  const points = markdownStagePoints(product.history);
+  return points.length > 0 ? points[points.length - 1].scraped_at : product.latest.scraped_at;
+}
+
+// 期間限定はいま出ている周期そのものでまとめる。同じ週の期間限定が1つの
+// かたまりになり、参照している分析サイトが追っている週次の履歴と同じ単位に
+// なる。
+function limitedPeriodOf(product) {
+  const periods = limitedPeriods(product.history);
+  return periods.length > 0 ? periods[periods.length - 1] : null;
+}
+
+function dateGroupOf(product, eventKey) {
+  if (LIMITED_EVENT_TYPES.has(eventKey)) {
+    const period = limitedPeriodOf(product);
+    // 終了日でまとめる。同じ週の期間限定は同じ終了日を持つ(金曜開始・木曜終了)
+    // ので、これが週次の周期そのものになる。開始日でまとめると、同じ offer でも
+    // 金曜に拾えた商品と数日後に拾えた商品が別のかたまりに割れてしまう。
+    //
+    // 表示も終了日にする。開始日として出せるのは「このトラッカーが最初に
+    // 確認できた日」であって offer の開始日ではないため、範囲で見せると
+    // 実際より遅く始まったように読めてしまう。終了日はサイト自身が
+    // 「8/27まで期間限定価格」と示している事実。
+    if (period?.endDate) {
+      return {
+        key: `end:${period.endDate}`,
+        label: `${formatDayWithWeekday(new Date(period.endDate), { plainDate: true })}まで`,
+        sortValue: Date.parse(`${period.endDate}T00:00:00Z`),
+      };
+    }
+    const from = period?.from ?? product.latest.scraped_at;
+    return { key: `from:${jstDayOf(from)}`, label: `${formatDayWithWeekday(from)}〜`, sortValue: Date.parse(from) };
+  }
+  // 値上げには「値下げ段階」が無いので、観測した日そのものを使う。
+  const iso = eventKey === "price_up" ? product.latest.scraped_at : markdownDateOf(product);
+  return { key: jstDayOf(iso) ?? String(iso), label: formatDayWithWeekday(iso) ?? "日付不明", sortValue: Date.parse(iso) };
+}
+
+function groupProductsByDateGroup(products, eventKey) {
+  const groups = new Map();
+  for (const product of products) {
+    const { key, label, sortValue } = dateGroupOf(product, eventKey);
+    if (!groups.has(key)) groups.set(key, { label, sortValue, products: [] });
+    groups.get(key).products.push(product);
+  }
+  // 新しい日付を上に。「今日なにが値下げされたか」を探しに来るため。
+  return [...groups.values()].sort((a, b) => b.sortValue - a.sortValue);
+}
+
 function appendProductGroup(section, labelText, products) {
   // <details>/<summary> をそのまま使う。開閉の状態・キーボード操作・スクリーン
   // リーダーへの伝わり方が標準で付いてくるので、自前で真似しない。
@@ -778,42 +854,20 @@ function renderContent() {
     header.appendChild(count);
     section.appendChild(header);
 
-    if (eventConfig.key === "markdown") {
-      const allProducts = categories.flatMap((c) => byCategory[c]);
-      // "直近で値下げが確認された日" — each product's own most recent 値下げ段階
-      // (i.e. when its *current* price was first observed), grouped by day.
-      appendDateSummary(
-        section,
-        groupProductsByDate(allProducts, (p) => {
-          const points = markdownStagePoints(p.history);
-          return points.length ? points[points.length - 1].scraped_at : null;
-        })
-      );
+    const allProducts = categories.flatMap((c) => byCategory[c]);
 
-      // Grouped by 値下げ段階 instead of category here — how many times a
-      // product has been discounted is the more useful axis to browse this
-      // particular section by (category grouping is still used everywhere
-      // else). 初値下げ is always exactly stage 1, so grouping it the same
-      // way wouldn't add anything.
-      const byStage = new Map();
-      for (const product of allProducts) {
-        const stage = markdownStagePoints(product.history).length;
-        if (!byStage.has(stage)) byStage.set(stage, []);
-        byStage.get(stage).push(product);
-      }
-      for (const stage of [...byStage.keys()].sort((a, b) => a - b)) {
-        appendProductGroup(section, `${stage}段階目`, byStage.get(stage));
+    if (state.groupBy === "date") {
+      for (const group of groupProductsByDateGroup(allProducts, eventConfig.key)) {
+        appendProductGroup(section, group.label, group.products);
       }
     } else {
-      if (eventConfig.key === "limited") {
-        // "直近で期間限定入りが確認された日" — 何週間も期間限定を繰り返している
-        // 商品は初回ではなく、いま出ている周期の開始日で数える。初回の日付だと
-        // 「最近期間限定に入った商品」を探しているときに何週間も前の日付が並ぶ。
+      // 日付チップはカテゴリ順のときだけ出す。日付順では見出しがそれ自体で
+      // 同じことを示すので、並べると二重になる。
+      if (eventConfig.key === "markdown" || eventConfig.key === "limited") {
         appendDateSummary(
           section,
-          groupProductsByDate(
-            categories.flatMap((c) => byCategory[c]),
-            (p) => currentLimitedStartDate(p.history)
+          groupProductsByDate(allProducts, (p) =>
+            eventConfig.key === "limited" ? currentLimitedStartDate(p.history) : markdownDateOf(p)
           )
         );
       }
@@ -842,6 +896,7 @@ function setActiveTab(container, attr, value) {
 function updateTabs() {
   setActiveTab(brandTabsEl, "brand", state.brand);
   setActiveTab(genderTabsEl, "gender", state.gender);
+  setActiveTab(groupTabsEl, "groupby", state.groupBy);
 }
 
 brandTabsEl.addEventListener("click", (e) => {
@@ -856,6 +911,14 @@ genderTabsEl.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-gender]");
   if (!btn) return;
   state = { ...state, gender: btn.dataset.gender };
+  updateTabs();
+  renderContent();
+});
+
+groupTabsEl.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-groupby]");
+  if (!btn) return;
+  state = { ...state, groupBy: btn.dataset.groupby };
   updateTabs();
   renderContent();
 });
