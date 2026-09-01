@@ -2,14 +2,25 @@ name: Scrape prices
 
 on:
   schedule:
-    # 21:00 UTC = 06:00 JST
-    - cron: "0 21 * * *"
+    # 値下げ・期間限定価格は日本時間の朝3時前後に入れ替わる。その直後を本命に、
+    # 昼前をもう一本の保険にする。分を0から外しているのは、毎時0分が世界中の
+    # ワークフローと competing する時間帯で、GitHub 側のキュー待ちがいちばん
+    # 伸びるため(実測で最大8時間ずれた日がある)。
+    - cron: "30 19 * * *" # 04:30 JST — 本命
+    - cron: "30 1 * * *" #  10:30 JST — 本命が遅延・失敗した日の取りこぼし用
   workflow_dispatch:
     inputs:
       debug_url:
         description: "(Optional) Product page URL to debug instead of a normal run. Renders just this one page and uploads page.html / screenshot.png / responses.json as an artifact."
         required: false
         type: string
+
+# 遅延した本命と保険の回が重なると、同じ商品に2つの実行が同時に書き込む。
+# 後から来た方を待たせて直列にする(cancel-in-progress は付けない — 走っている
+# 巡回を途中で殺すと、その日の記録が中途半端なところで切れる)。
+concurrency:
+  group: scrape
+  cancel-in-progress: false
 
 jobs:
   scrape:
