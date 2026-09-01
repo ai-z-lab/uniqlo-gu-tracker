@@ -239,6 +239,81 @@ function lastCrawlDayOf(rows) {
   return newest;
 }
 
+// --- 曜日別の価格変動集計 ---------------------------------------------------
+
+// 曜日も日本時間で数える。値下げも期間限定も日本時間の早朝(期間限定は金曜
+// 2:00)に入れ替わるので、閲覧者のローカル時間で曜日を出すと切り替えの前後が
+// 1日ずれる地域が出る。jstDayOf() が返すのは日本時間の暦日 "YYYY-MM-DD" なので、
+// UTC の0時として解釈して getUTCDay() を読めば、閲覧者のタイムゾーンに関係なく
+// 同じ曜日になる。
+const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
+// 表示は月曜始まり(日本の暦の並び)。
+const WEEKDAY_DISPLAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+
+function weekdayIndexOf(jstDay) {
+  const date = new Date(`${jstDay}T00:00:00Z`);
+  return Number.isNaN(date.getTime()) ? null : date.getUTCDay();
+}
+
+function nextJstDay(jstDay) {
+  const date = new Date(`${jstDay}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Date(date.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+// 商品の履歴を「日本時間の1日につき1行」に畳む。
+//
+// スクレイパーは同じ商品・同じ日の行を上書きするので基本は1日1行だが、
+// 同日判定が UTC だった頃(〜2026-08)の行だけは、日本時間で見ると同じ日に
+// 2行あることがある。その日の最後の記録を採る。
+function rowsByJstDay(history) {
+  const byDay = new Map();
+  for (const row of history) {
+    const day = jstDayOf(row.scraped_at);
+    if (day) byDay.set(day, row);
+  }
+  return byDay;
+}
+
+// 曜日ごとに「前日から価格が動いていた回数」を数える。
+//
+// 数えているのは *変化を確認した* 曜日であって、値札が書き換わった瞬間の曜日
+// ではない。巡回は1日1回(日本時間の早朝)なので、ある日の巡回で見つかる変化は
+// 「前日の巡回以降のどこかで起きた」までしか分からない。期間限定価格の
+// 入れ替わりは金曜2:00(JST)で、朝4:30の巡回はその直後にあたるため、この
+// ずれが実用上いちばん効くケースでは曜日は一致する。
+//
+// 前日の記録が無い商品日(巡回の失敗、一覧に載っていなかった日、記録開始前)は
+// 比較の対象にしない。「前々日から動いていた」ことは分かっても、それが
+// どちらの日に起きたのかは決められないため。数えずに捨てるのではなく
+// skippedChanges として持ち帰り、除外した件数を画面に出す。
+function weekdayPriceChangeStats(products) {
+  const byWeekday = WEEKDAY_LABELS.map(() => ({ comparisons: 0, downs: 0, ups: 0 }));
+  let skippedChanges = 0;
+
+  for (const { history } of products) {
+    const byDay = rowsByJstDay(history);
+    const days = [...byDay.keys()].sort();
+    for (let i = 1; i < days.length; i++) {
+      const previousDay = days[i - 1];
+      const day = days[i];
+      const diff = byDay.get(day).price - byDay.get(previousDay).price;
+      if (nextJstDay(previousDay) !== day) {
+        if (diff !== 0) skippedChanges += 1;
+        continue;
+      }
+      const weekday = weekdayIndexOf(day);
+      if (weekday === null) continue;
+      const bucket = byWeekday[weekday];
+      bucket.comparisons += 1;
+      if (diff < 0) bucket.downs += 1;
+      else if (diff > 0) bucket.ups += 1;
+    }
+  }
+
+  return { byWeekday, skippedChanges };
+}
+
 function buildIndex(rows) {
   const byProduct = new Map();
   for (const row of rows) {
@@ -540,6 +615,118 @@ function appendProductGroup(section, labelText, products) {
   section.appendChild(group);
 }
 
+const countFormatter = new Intl.NumberFormat("ja-JP");
+
+// 「曜日別の価格変動」パネル。いま選んでいるブランド・性別の全商品が対象。
+//
+// 棒の長さは件数ではなく変化率(比較1件あたり何回動いたか)にしている。曜日ごとに
+// 比較できた商品日数が揃わない — 巡回が失敗した日、商品が一覧から外れた日、
+// 記録開始前の日はそのぶん母数が減る — ため、件数をそのまま並べると
+// 「巡回できた日が多い曜日」が長く出るだけの図になる。件数は数字で併記する。
+function appendWeekdaySummary(container, products) {
+  const { byWeekday, skippedChanges } = weekdayPriceChangeStats(products);
+
+  const totalComparisons = byWeekday.reduce((sum, w) => sum + w.comparisons, 0);
+  if (totalComparisons === 0) return; // 2日以上の履歴がある商品がまだ無い
+
+  const totalChanges = byWeekday.reduce((sum, w) => sum + w.downs + w.ups, 0);
+  const rateOf = (w) => (w.comparisons === 0 ? 0 : (w.downs + w.ups) / w.comparisons);
+  const maxRate = Math.max(...byWeekday.map(rateOf));
+
+  const section = document.createElement("section");
+  section.className = "section weekday-summary";
+
+  const header = document.createElement("div");
+  header.className = "section-header";
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = "曜日別の価格変動";
+  const count = document.createElement("span");
+  count.className = "count";
+  count.textContent = `直近${HISTORY_WINDOW_DAYS}日・${countFormatter.format(totalChanges)}件`;
+  header.appendChild(label);
+  header.appendChild(count);
+  section.appendChild(header);
+
+  const rows = document.createElement("ul");
+  rows.className = "weekday-rows";
+
+  for (const weekday of WEEKDAY_DISPLAY_ORDER) {
+    const stats = byWeekday[weekday];
+    const rate = rateOf(stats);
+    const changes = stats.downs + stats.ups;
+
+    const row = document.createElement("li");
+    row.className = "weekday-row";
+    // 母数まで画面に並べると7行が読めなくなるので、行そのものに持たせる。
+    row.title =
+      stats.comparisons === 0
+        ? `${WEEKDAY_LABELS[weekday]}曜: 前日と比較できた記録がありません`
+        : `${WEEKDAY_LABELS[weekday]}曜: 前日と比較できた${countFormatter.format(stats.comparisons)}件のうち` +
+          `${countFormatter.format(changes)}件で価格が動きました(値下げ${countFormatter.format(stats.downs)}・値上げ${countFormatter.format(stats.ups)})`;
+
+    const day = document.createElement("span");
+    day.className = "weekday-day";
+    day.textContent = WEEKDAY_LABELS[weekday];
+    row.appendChild(day);
+
+    // 棒は絵として読むもので、同じ数字が右側に文字でも出ている。
+    // 読み上げでは二度手間になるだけなので外す。
+    const track = document.createElement("span");
+    track.className = "weekday-track";
+    track.setAttribute("aria-hidden", "true");
+    const fill = document.createElement("span");
+    fill.className = "weekday-fill";
+    fill.style.width = maxRate > 0 ? `${(rate / maxRate) * 100}%` : "0%";
+    // 棒の中の値下げ・値上げの比。0件の側は要素ごと作らない(幅0の要素が
+    // border-radius だけ残って点に見えるため)。
+    for (const [kind, value] of [["down", stats.downs], ["up", stats.ups]]) {
+      if (value === 0) continue;
+      const part = document.createElement("span");
+      part.className = `weekday-part ${kind}`;
+      part.style.flexGrow = String(value);
+      fill.appendChild(part);
+    }
+    track.appendChild(fill);
+    row.appendChild(track);
+
+    const counts = document.createElement("span");
+    counts.className = "weekday-counts";
+    // 0件の曜日は色を落とす。7行のうち動きのある曜日は数えるほどしかなく、
+    // すべて同じ濃さで並べると、どこを見ればいいのかが読み取りにくい。
+    for (const [kind, word, value] of [["down", "値下げ", stats.downs], ["up", "値上げ", stats.ups]]) {
+      const el = document.createElement("span");
+      el.className = value === 0 ? `${kind} zero` : kind;
+      el.textContent = `${word}${countFormatter.format(value)}`;
+      counts.appendChild(el);
+    }
+    row.appendChild(counts);
+
+    const rateEl = document.createElement("span");
+    rateEl.className = "weekday-rate";
+    rateEl.textContent = stats.comparisons === 0 ? "—" : `${(rate * 100).toFixed(1)}%`;
+    row.appendChild(rateEl);
+
+    rows.appendChild(row);
+  }
+  section.appendChild(rows);
+
+  const note = document.createElement("p");
+  note.className = "weekday-note";
+  // この集計が何を数えていないのかを、数字の隣に置く。
+  note.textContent =
+    "前日の巡回から価格が変わっていた商品を、変化を確認した曜日で数えています。巡回は日本時間の早朝に1回なので、" +
+    "値札が実際に変わったのは前日の巡回以降のどこかです。%と棒の長さは前日と比較できた件数に対する割合 — " +
+    "曜日ごとに比較できた件数が違うためです。期間限定価格が終わって元に戻った商品は値上げに数えます。";
+  if (skippedChanges > 0) {
+    note.textContent +=
+      `前日の記録が無く、どちらの日に動いたか決められない変化${countFormatter.format(skippedChanges)}件は数えていません。`;
+  }
+  section.appendChild(note);
+
+  container.appendChild(section);
+}
+
 function renderContent() {
   contentEl.innerHTML = "";
   contentEl.style.setProperty("--brand-color", BRAND_CONFIG[state.brand].color);
@@ -554,6 +741,12 @@ function renderContent() {
     contentEl.appendChild(empty);
     return;
   }
+
+  // 個別の商品より先に、その日どこを見るべきかの当たりが付く数字を出す。
+  appendWeekdaySummary(
+    contentEl,
+    EVENT_TYPE_CONFIG.flatMap((e) => Object.values(bucket[e.key] || {}).flat())
+  );
 
   for (const eventConfig of EVENT_TYPE_CONFIG) {
     const byCategory = bucket[eventConfig.key];
