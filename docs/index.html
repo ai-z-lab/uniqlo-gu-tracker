@@ -204,6 +204,14 @@
       font-size: 0.85rem;
     }
 
+    /* セクションから外したものがある時の断り書き。件数を黙って減らさない。 */
+    .section-note {
+      margin: -0.4rem 0 0.9rem;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      line-height: 1.6;
+    }
+
     /* "直近で値下げ/期間限定入りが確認された日" strip at the top of the 値下げ/
        期間限定 sections — a lightweight, non-interactive summary, not a filter
        control. */
@@ -277,6 +285,8 @@
     /* 値下げ・値上げは、カードの差額表示と同じ色をそのまま使う。 */
     .weekday-part.down { background: var(--down); }
     .weekday-part.up { background: var(--up); }
+    /* 期間限定の開始は、期間限定セクションと同じ色。 */
+    .weekday-part.start { background: var(--status-limited); }
 
     .weekday-counts {
       display: flex;
@@ -287,6 +297,7 @@
 
     .weekday-counts .down { color: var(--down); }
     .weekday-counts .up { color: var(--up); }
+    .weekday-counts .start { color: var(--status-limited); }
     .weekday-counts .zero { color: var(--text-muted); opacity: 0.6; }
 
     .weekday-rate {
@@ -383,6 +394,84 @@
 
     .category-group > .grid {
       padding: 0.8rem 0.9rem 0.9rem;
+    }
+
+    /* --- 期間限定 開始履歴 ---
+       期間限定の一覧からは終了した回が消えるので、「いつ期間限定に入ったか」は
+       ここに時系列で残る。日付ごとの <details> はカテゴリ一覧と同じ見た目を
+       使い回す(.category-group)。 */
+    .limited-log .weekday-rows {
+      margin-bottom: 0.9rem;
+    }
+
+    .log-items {
+      list-style: none;
+      margin: 0;
+      padding: 0.1rem 0.9rem 0.5rem;
+    }
+
+    .log-item + .log-item {
+      border-top: 1px solid var(--border);
+    }
+
+    .log-link {
+      display: grid;
+      /* 商品名 / 価格。補足(何回目・いつまで)は下段に回り込む。 */
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: baseline;
+      gap: 0.15rem 0.6rem;
+      padding: 0.5rem 0;
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .log-link:hover .log-name,
+    .log-link:focus-visible .log-name {
+      text-decoration: underline;
+    }
+
+    .log-name {
+      font-size: 0.8rem;
+      font-weight: 700;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .log-price,
+    .log-times {
+      font-size: 0.8rem;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      color: var(--status-limited);
+    }
+
+    .log-meta {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.25rem 0.6rem;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 繰り返している商品の開始日は、このパネルの主役なので落とさない。 */
+    .log-repeat {
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .log-until.ongoing {
+      font-weight: 700;
+      color: var(--status-limited);
+    }
+
+    .log-tag {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0 0.4rem;
     }
 
     .grid {
@@ -748,9 +837,24 @@
         gap: 0.35rem;
       }
 
-      .weekday-note {
+      .weekday-note,
+      .section-note {
         font-size: 0.66rem;
         line-height: 1.55;
+      }
+
+      .log-items {
+        padding: 0.1rem 0.7rem 0.4rem;
+      }
+
+      .log-name,
+      .log-price,
+      .log-times {
+        font-size: 0.75rem;
+      }
+
+      .log-meta {
+        font-size: 0.66rem;
       }
 
       .category-group {

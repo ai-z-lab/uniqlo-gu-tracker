@@ -34,6 +34,8 @@ const CATEGORY_ORDER = {
 
 let state = { brand: "uniqlo", gender: "men" };
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
+// データに含まれる最も古い/新しい巡回日(日本時間の暦日)。buildIndex() が入れる。
+let crawlDayRange = { first: null, last: null };
 
 const currencyFormatter = (currency) =>
   new Intl.NumberFormat("ja-JP", { style: "currency", currency, maximumFractionDigits: 0 });
@@ -230,13 +232,21 @@ function isLimitedOfferOver(row, todayJst) {
 // 基準は固定の日数ではなく「データ全体で最も新しい巡回日」。定期実行が失敗した
 // 日があっても、基準日はその前の成功時のままなので、全商品が一斉に古い扱いに
 // なることはない。
-function lastCrawlDayOf(rows) {
+//
+// いちばん古い巡回日も一緒に返す。読み込む履歴は直近 HISTORY_WINDOW_DAYS 日ぶん
+// しかないので、その縁に乗っている出来事は「そこで始まった」のか「それ以前から
+// 続いていた」のかを区別できない。期間限定の開始履歴はこの日を見て、縁の日の
+// 開始を曜日の集計から外す。
+function crawlDayRangeOf(rows) {
+  let oldest = null;
   let newest = null;
   for (const row of rows) {
     const day = jstDayOf(row.scraped_at);
-    if (day && (newest === null || day > newest)) newest = day;
+    if (!day) continue;
+    if (oldest === null || day < oldest) oldest = day;
+    if (newest === null || day > newest) newest = day;
   }
-  return newest;
+  return { first: oldest, last: newest };
 }
 
 // --- 曜日別の価格変動集計 ---------------------------------------------------
@@ -314,6 +324,73 @@ function weekdayPriceChangeStats(products) {
   return { byWeekday, skippedChanges };
 }
 
+// --- 期間限定の開始履歴 -----------------------------------------------------
+
+// 「期間限定が始まった」1回ぶんの記録。limitedPeriods() が返す各周期の from が
+// その周期を最初に確認した巡回日 ＝ ここでいう開始日。
+//
+// 対象は期間限定セクションに今いる商品に限らない。期間限定が終わって元の価格に
+// 戻った商品は値上げセクションへ移ってしまうが、その回がいつ始まったかは
+// 周期のパターンを見るうえで同じ価値があるので、履歴に期間限定の行を持つ商品を
+// すべて拾う。
+//
+// 新しい開始が先(日付の降順)。同じ日の中は商品名順。
+function limitedStartEvents(products, firstCrawlDay) {
+  const events = [];
+  for (const product of products) {
+    const periods = limitedPeriods(product.history);
+    if (periods.length === 0) continue;
+    const startDays = periods.map((period) => jstDayOf(period.from)).filter(Boolean);
+    periods.forEach((period, i) => {
+      const day = jstDayOf(period.from);
+      if (!day) return;
+      events.push({
+        day,
+        weekday: weekdayIndexOf(day),
+        product,
+        period,
+        occurrence: i + 1,
+        startDays,
+        // 読み込む履歴の窓(既定35日)より前から続いていた周期は、窓の縁が開始日に
+        // 見えるだけで、本当の開始日は分からない。曜日の集計からは外す。
+        atWindowEdge: firstCrawlDay !== null && day <= firstCrawlDay,
+      });
+    });
+  }
+  const nameOf = (e) => e.product.latest.product_name || e.product.latest.product_id;
+  events.sort((a, b) => (a.day === b.day ? nameOf(a).localeCompare(nameOf(b), "ja") : a.day < b.day ? 1 : -1));
+  return events;
+}
+
+// 開始を曜日ごとに数える。値下げ側の集計(weekdayPriceChangeStats)と違って
+// 母数で割らずに件数をそのまま並べる — 数えているのは商品日ではなく「開始」
+// という出来事そのもので、どの曜日も窓の中に同じ回数だけ現れるため。
+function limitedStartWeekdayCounts(events) {
+  const byWeekday = WEEKDAY_LABELS.map(() => 0);
+  let counted = 0;
+  for (const event of events) {
+    if (event.atWindowEdge || event.weekday === null) continue;
+    byWeekday[event.weekday] += 1;
+    counted += 1;
+  }
+  return { byWeekday, counted };
+}
+
+// 商品ごとに、期間限定になった開始日を古い順に並べたもの。2回以上あるものだけ。
+// 例: ドライEXポロシャツ → ["8/21", "9/4"]
+function repeatedLimitedProducts(events) {
+  const byProduct = new Map();
+  for (const event of events) {
+    if (event.startDays.length < 2) continue;
+    byProduct.set(event.product.latest.product_id, event);
+  }
+  return [...byProduct.values()].sort(
+    (a, b) =>
+      b.startDays.length - a.startDays.length ||
+      (a.startDays[a.startDays.length - 1] < b.startDays[b.startDays.length - 1] ? 1 : -1)
+  );
+}
+
 function buildIndex(rows) {
   const byProduct = new Map();
   for (const row of rows) {
@@ -322,7 +399,8 @@ function buildIndex(rows) {
   }
 
   const todayJst = jstDayOf(new Date());
-  const lastCrawlDay = lastCrawlDayOf(rows);
+  crawlDayRange = crawlDayRangeOf(rows);
+  const lastCrawlDay = crawlDayRange.last;
 
   const idx = {};
   for (const history of byProduct.values()) {
@@ -727,6 +805,279 @@ function appendWeekdaySummary(container, products) {
   container.appendChild(section);
 }
 
+// "2026-09-04" -> "9/4(金)"。日付だけだと曜日の並びが読めないので必ず添える
+// — このパネルは「どの曜日に始まりやすいか」を見るためのものなので。
+function formatStartDay(jstDay) {
+  const weekday = weekdayIndexOf(jstDay);
+  const label = stageDateFormatter.format(new Date(`${jstDay}T00:00:00Z`));
+  return weekday === null ? label : `${label}(${WEEKDAY_LABELS[weekday]})`;
+}
+
+function formatShortDay(jstDay) {
+  return stageDateFormatter.format(new Date(`${jstDay}T00:00:00Z`));
+}
+
+// 開始履歴の1行の骨組み。カードと同じで行全体が商品ページへのリンク。
+// 商品名 / 行の右肩に出す数字(価格・回数) / 下段に回り込む補足、の3つ。
+// 補足に何を入れるかは呼び出し側が meta に足す。
+function startLogRow(latest, trailing, trailingClass) {
+  const item = document.createElement("li");
+  item.className = "log-item";
+
+  const link = document.createElement("a");
+  link.className = "log-link";
+  link.href = latest.url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+
+  const name = document.createElement("span");
+  name.className = "log-name";
+  name.textContent = latest.product_name || latest.product_id;
+  link.appendChild(name);
+
+  const trailingEl = document.createElement("span");
+  trailingEl.className = trailingClass;
+  trailingEl.textContent = trailing;
+  link.appendChild(trailingEl);
+
+  const meta = document.createElement("span");
+  meta.className = "log-meta";
+  link.appendChild(meta);
+
+  item.appendChild(link);
+  return { item, meta };
+}
+
+// 日付ごとのログの1行。その回の価格・その回が何回目か・いつまでか。
+function renderStartLogItem(event, todayJst) {
+  const { latest } = event.product;
+  const fmt = currencyFormatter(event.period.currency || "JPY");
+  const { item, meta } = startLogRow(latest, fmt.format(event.period.price), "log-price");
+
+  // 繰り返している商品は、その商品の開始日を全部その場に並べる。
+  // 例: 「2回目 · 8/21, 9/4」。周期の間隔がその行だけで読める。
+  if (event.startDays.length > 1) {
+    const repeat = document.createElement("span");
+    repeat.className = "log-repeat";
+    repeat.textContent = `${event.occurrence}回目 · ${event.startDays.map(formatShortDay).join(", ")}`;
+    meta.appendChild(repeat);
+  }
+
+  const endDate = event.period.endDate;
+  const ongoing = endDate !== null && todayJst !== null && endDate >= todayJst;
+  const until = document.createElement("span");
+  until.className = `log-until${ongoing ? " ongoing" : ""}`;
+  until.textContent = ongoing
+    ? `開催中(〜${shortEndDateFormatter.format(new Date(endDate))})`
+    : endDate !== null
+      ? `〜${shortEndDateFormatter.format(new Date(endDate))} 終了`
+      : `〜${stageDateFormatter.format(new Date(event.period.to))} まで確認`;
+  meta.appendChild(until);
+
+  // 窓の縁に乗っている開始は、そこで始まったとは限らない(記録がそこまでしか
+  // 無いだけ)。行の上でも分かるようにする。
+  if (event.atWindowEdge) {
+    const tag = document.createElement("span");
+    tag.className = "log-tag";
+    tag.textContent = "記録開始日";
+    meta.appendChild(tag);
+  }
+
+  return item;
+}
+
+// 「期間限定 開始履歴」パネル。曜日別の価格変動と並ぶ読むだけの集計だが、
+// こちらは *期間限定が始まった日* だけを時系列に並べたログ。
+//
+// 期間限定のセクションからは終了した回が消えるので、終わった回がどの日に
+// 始まっていたのかはここに残る。同じ商品が何度も期間限定になる場合は、その
+// 開始日を1行の中に並べて周期が読めるようにする。
+function appendLimitedStartLog(container, products) {
+  const events = limitedStartEvents(products, crawlDayRange.first);
+  if (events.length === 0) return;
+
+  const todayJst = jstDayOf(new Date());
+  const section = document.createElement("section");
+  section.className = "section limited-log";
+  section.style.setProperty("--status-color", "var(--status-limited)");
+
+  const header = document.createElement("div");
+  header.className = "section-header";
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = "期間限定 開始履歴";
+  const count = document.createElement("span");
+  count.className = "count";
+  count.textContent = `直近${HISTORY_WINDOW_DAYS}日・${countFormatter.format(events.length)}回`;
+  header.appendChild(label);
+  header.appendChild(count);
+  section.appendChild(header);
+
+  const { byWeekday, counted } = limitedStartWeekdayCounts(events);
+  if (counted > 0) {
+    const maxCount = Math.max(...byWeekday);
+    const rows = document.createElement("ul");
+    rows.className = "weekday-rows";
+
+    for (const weekday of WEEKDAY_DISPLAY_ORDER) {
+      const starts = byWeekday[weekday];
+
+      const row = document.createElement("li");
+      row.className = "weekday-row";
+      row.title = `${WEEKDAY_LABELS[weekday]}曜: 期間限定の開始 ${countFormatter.format(starts)}回`;
+
+      const day = document.createElement("span");
+      day.className = "weekday-day";
+      day.textContent = WEEKDAY_LABELS[weekday];
+      row.appendChild(day);
+
+      // 棒は絵として読むもので、同じ数字が右側に文字でも出ている。
+      const track = document.createElement("span");
+      track.className = "weekday-track";
+      track.setAttribute("aria-hidden", "true");
+      const fill = document.createElement("span");
+      fill.className = "weekday-fill";
+      fill.style.width = maxCount > 0 ? `${(starts / maxCount) * 100}%` : "0%";
+      if (starts > 0) {
+        const part = document.createElement("span");
+        part.className = "weekday-part start";
+        part.style.flexGrow = "1";
+        fill.appendChild(part);
+      }
+      track.appendChild(fill);
+      row.appendChild(track);
+
+      const counts = document.createElement("span");
+      counts.className = "weekday-counts";
+      const startsEl = document.createElement("span");
+      startsEl.className = starts === 0 ? "start zero" : "start";
+      startsEl.textContent = `開始${countFormatter.format(starts)}`;
+      counts.appendChild(startsEl);
+      row.appendChild(counts);
+
+      const rateEl = document.createElement("span");
+      rateEl.className = "weekday-rate";
+      rateEl.textContent = `${((starts / counted) * 100).toFixed(1)}%`;
+      row.appendChild(rateEl);
+
+      rows.appendChild(row);
+    }
+    section.appendChild(rows);
+  }
+
+  // 日付ごとのログ。カテゴリ一覧と同じ <details> で、開いた時に初めて描く。
+  const byDay = new Map();
+  for (const event of events) {
+    if (!byDay.has(event.day)) byDay.set(event.day, []);
+    byDay.get(event.day).push(event);
+  }
+  const days = [...byDay.keys()].sort().reverse();
+
+  days.forEach((day, i) => {
+    const dayEvents = byDay.get(day);
+    const group = document.createElement("details");
+    group.className = "category-group log-day";
+
+    const summary = document.createElement("summary");
+    const dayLabel = document.createElement("span");
+    dayLabel.className = "group-label";
+    dayLabel.textContent = formatStartDay(day);
+    summary.appendChild(dayLabel);
+    const dayCount = document.createElement("span");
+    dayCount.className = "group-count";
+    dayCount.textContent = `${dayEvents.length}件`;
+    summary.appendChild(dayCount);
+    group.appendChild(summary);
+
+    const list = document.createElement("ul");
+    list.className = "log-items";
+    group.appendChild(list);
+
+    const renderItems = () => {
+      for (const event of dayEvents) {
+        try {
+          list.appendChild(renderStartLogItem(event, todayJst));
+        } catch (err) {
+          console.error(`failed to render start log item for ${event.product.latest.product_id}`, err);
+        }
+      }
+    };
+
+    // いちばん新しい日だけは開いた状態で出す。パネルを開いた人がまず見たいのは
+    // 「直近で何が期間限定に入ったか」なので、そこは1タップ省く。
+    let rendered = false;
+    if (i === 0) {
+      group.open = true;
+      rendered = true;
+      renderItems();
+    }
+    group.addEventListener("toggle", () => {
+      if (!group.open || rendered) return;
+      rendered = true;
+      renderItems();
+    });
+
+    section.appendChild(group);
+  });
+
+  // 繰り返しているものだけを商品単位でもう一度並べる。日付ごとのログは
+  // 「その日に何が始まったか」しか見せないので、「この商品は何週おきに来るのか」
+  // はこちらで読む。
+  const repeated = repeatedLimitedProducts(events);
+  if (repeated.length > 0) {
+    const group = document.createElement("details");
+    group.className = "category-group log-repeats";
+
+    const summary = document.createElement("summary");
+    const label = document.createElement("span");
+    label.className = "group-label";
+    label.textContent = "繰り返し期間限定になった商品";
+    summary.appendChild(label);
+    const groupCount = document.createElement("span");
+    groupCount.className = "group-count";
+    groupCount.textContent = `${repeated.length}件`;
+    summary.appendChild(groupCount);
+    group.appendChild(summary);
+
+    const list = document.createElement("ul");
+    list.className = "log-items";
+    group.appendChild(list);
+
+    let rendered = false;
+    group.addEventListener("toggle", () => {
+      if (!group.open || rendered) return;
+      rendered = true;
+      for (const event of repeated) {
+        const { item, meta } = startLogRow(event.product.latest, `${event.startDays.length}回`, "log-times");
+        const dates = document.createElement("span");
+        dates.className = "log-repeat";
+        dates.textContent = event.startDays.map((d) => `${formatShortDay(d)}〜`).join("、");
+        meta.appendChild(dates);
+        list.appendChild(item);
+      }
+    });
+
+    section.appendChild(group);
+  }
+
+  const note = document.createElement("p");
+  note.className = "weekday-note";
+  note.textContent =
+    "期間限定価格一覧でその周期を初めて確認した日を「開始」として数えています。周期の区切りは終了日で、" +
+    "終了日が変われば別の回として数えます。巡回は日本時間の早朝に1回なので、値札が実際に切り替わったのは" +
+    "前日の巡回以降のどこかです(期間限定の入れ替わりは金曜2:00、巡回は4:30)。";
+  const edgeStarts = events.filter((e) => e.atWindowEdge).length;
+  if (edgeStarts > 0 && crawlDayRange.first) {
+    note.textContent +=
+      `読み込んでいる履歴は${formatShortDay(crawlDayRange.first)}以降のぶんだけなので、` +
+      `その日に始まって見える${countFormatter.format(edgeStarts)}回は、それ以前から続いていた可能性があります。` +
+      "曜日の集計からは外しています。";
+  }
+  section.appendChild(note);
+
+  container.appendChild(section);
+}
+
 function renderContent() {
   contentEl.innerHTML = "";
   contentEl.style.setProperty("--brand-color", BRAND_CONFIG[state.brand].color);
@@ -742,11 +1093,14 @@ function renderContent() {
     return;
   }
 
+  const allProducts = EVENT_TYPE_CONFIG.flatMap((e) => Object.values(bucket[e.key] || {}).flat());
+
   // 個別の商品より先に、その日どこを見るべきかの当たりが付く数字を出す。
-  appendWeekdaySummary(
-    contentEl,
-    EVENT_TYPE_CONFIG.flatMap((e) => Object.values(bucket[e.key] || {}).flat())
-  );
+  appendWeekdaySummary(contentEl, allProducts);
+
+  // 「期間限定 開始履歴」は期間限定のセクションの直後に置く。期間限定の
+  // セクションが両方とも無いブランド・性別では出さない。
+  const limitedLogAnchor = ["limited", "first_limited"].find((key) => bucket[key]);
 
   for (const eventConfig of EVENT_TYPE_CONFIG) {
     const byCategory = bucket[eventConfig.key];
@@ -754,7 +1108,13 @@ function renderContent() {
     const categories = Object.keys(byCategory);
     if (categories.length === 0) continue;
 
-    const total = categories.reduce((sum, c) => sum + byCategory[c].length, 0);
+    // 期間限定のセクションは開催中のものだけを並べる。終了した回を混ぜると
+    // 「今どれが安いのか」を探すのに毎回読み飛ばすことになるため。消えた回は
+    // 下の「期間限定 開始履歴」に開始日ごとに残るので、追えなくはならない。
+    const isLimitedSection = LIMITED_EVENT_TYPES.has(eventConfig.key);
+    const visibleOf = (products) => (isLimitedSection ? products.filter((p) => !p.offerOver) : products);
+
+    const total = categories.reduce((sum, c) => sum + visibleOf(byCategory[c]).length, 0);
     // セクション見出しの件数が最初に目に入る数字なので、そのうち何件が
     // すでに終了しているのかをここでも示す。
     const overTotal = categories.reduce(
@@ -773,18 +1133,31 @@ function renderContent() {
     label.textContent = eventConfig.label;
     const count = document.createElement("span");
     count.className = "count";
-    count.textContent = overTotal > 0 ? `${total}件(うち終了 ${overTotal})` : `${total}件`;
+    count.textContent = isLimitedSection
+      ? `開催中 ${total}件`
+      : overTotal > 0
+        ? `${total}件(うち終了 ${overTotal})`
+        : `${total}件`;
     header.appendChild(label);
     header.appendChild(count);
     section.appendChild(header);
 
+    // 一覧から外した件数は黙って落とさず、どこに行ったのかも添える。
+    if (isLimitedSection && overTotal > 0) {
+      const hidden = document.createElement("p");
+      hidden.className = "section-note";
+      hidden.textContent =
+        `終了した${overTotal}件はこの一覧に出していません。いつ期間限定に入っていたかは下の「期間限定 開始履歴」で見られます。`;
+      section.appendChild(hidden);
+    }
+
     if (eventConfig.key === "markdown") {
-      const allProducts = categories.flatMap((c) => byCategory[c]);
+      const markdownProducts = categories.flatMap((c) => byCategory[c]);
       // "直近で値下げが確認された日" — each product's own most recent 値下げ段階
       // (i.e. when its *current* price was first observed), grouped by day.
       appendDateSummary(
         section,
-        groupProductsByDate(allProducts, (p) => {
+        groupProductsByDate(markdownProducts, (p) => {
           const points = markdownStagePoints(p.history);
           return points.length ? points[points.length - 1].scraped_at : null;
         })
@@ -796,7 +1169,7 @@ function renderContent() {
       // else). 初値下げ is always exactly stage 1, so grouping it the same
       // way wouldn't add anything.
       const byStage = new Map();
-      for (const product of allProducts) {
+      for (const product of markdownProducts) {
         const stage = markdownStagePoints(product.history).length;
         if (!byStage.has(stage)) byStage.set(stage, []);
         byStage.get(stage).push(product);
@@ -809,23 +1182,29 @@ function renderContent() {
         // "直近で期間限定入りが確認された日" — 何週間も期間限定を繰り返している
         // 商品は初回ではなく、いま出ている周期の開始日で数える。初回の日付だと
         // 「最近期間限定に入った商品」を探しているときに何週間も前の日付が並ぶ。
+        // 一覧に出している開催中のものだけを数える(下の一覧と件数を合わせる)。
         appendDateSummary(
           section,
           groupProductsByDate(
-            categories.flatMap((c) => byCategory[c]),
+            categories.flatMap((c) => visibleOf(byCategory[c])),
             (p) => currentLimitedStartDate(p.history)
           )
         );
       }
 
       for (const category of categoryOrderFor(state.brand, categories)) {
-        const products = byCategory[category];
-        if (!products || products.length === 0) continue;
+        const products = visibleOf(byCategory[category] || []);
+        if (products.length === 0) continue;
         appendProductGroup(section, category, products);
       }
     }
 
     contentEl.appendChild(section);
+
+    // 開始履歴が見るのは「期間限定の行を履歴に持つ商品」すべて。期間限定が
+    // 終わって元の価格に戻った商品は値上げセクションへ移っているため、
+    // 期間限定セクションの中身だけでは終わった回が丸ごと抜ける。
+    if (eventConfig.key === limitedLogAnchor) appendLimitedStartLog(contentEl, allProducts);
   }
 }
 
