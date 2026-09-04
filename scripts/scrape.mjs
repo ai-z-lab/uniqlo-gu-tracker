@@ -26,6 +26,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -1411,6 +1412,53 @@ async function recordExtractedProduct(extracted, source, productRunState) {
   return { productId, eventType, priceChanged, price: extracted.price, currency: extracted.currency };
 }
 
+// --- Recording the crawl itself ---
+
+// 「その日そのソースを実際に見に行けたのか」を scrape_runs に残す。
+//
+// price_events だけでは、ある商品の行が無い日が「値下げが無かった日」なのか
+// 「そもそも巡回できていない日」なのか区別できない。周期表(年ごとの初動値下げ
+// 日を並べる表)は、その区別が付かないと巡回が止まっていた期間をそのまま
+// 「値下げが無かった期間」として出してしまう。
+//
+// 粒度をソース単位にしているのは、失敗が実行全体で起きるとは限らないため。
+// 2026-08-20 には GU レディースの一覧だけが2回連続で0件を返し、他のソースは
+// 正常だった。実行単位でしか残さなければ、この日は「成功した日」として
+// 記録され、GUレディースの欠測が見えなくなる。
+//
+// 記録に失敗しても巡回そのものは止めない。これは観測のメタデータであって、
+// 価格の記録より優先されるものではない。ただし黙って落とさず、ログには出す
+// (この行が欠けると、その日は「未確認」として扱われる側に倒れる)。
+async function recordScrapeRun(source, runId, startedAt, result, note) {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase.from('scrape_runs').insert({
+      run_id: runId,
+      source_id: source.id,
+      brand: source.brand,
+      gender: source.gender ?? null,
+      listing_type: source.listingType ?? null,
+      started_at: startedAt,
+      finished_at: new Date().toISOString(),
+      discovered: result.discovered,
+      recorded: result.recorded,
+      price_changed: result.priceChanged,
+      skipped: result.skipped,
+      failed: result.failed,
+      // 「見に行けた」と言えるのは、1件以上発見できて、その全部が失敗した
+      // わけではない場合だけ。0件発見は scrape.yml 側でもジョブ失敗の扱い。
+      ok: result.discovered > 0 && result.failed < result.discovered,
+      note: note ?? null,
+    });
+    if (error) throw error;
+  } catch (err) {
+    console.error(
+      `[${source.id}] !! scrape_runs への記録に失敗: ${err.message} — ` +
+        'この日のこのソースは分析ページ上で「未確認」に倒れます(価格の記録自体は影響を受けません)。'
+    );
+  }
+}
+
 async function processSource(source, productRunState) {
   const { items, total } = await discoverProductsViaApi(source);
   console.log(
@@ -2431,9 +2479,27 @@ async function main() {
   const totals = { discovered: 0, recorded: 0, priceChanged: 0, skipped: 0, failed: 0, emptySources: [] };
   // Shared across every source in this run — see recordExtractedProduct for why.
   const productRunState = new Map();
+  // 同じ実行に属する scrape_runs の行をまとめるためのID。
+  const runId = randomUUID();
 
   for (const source of sources) {
-    const result = await processSource(source, productRunState);
+    const startedAt = new Date().toISOString();
+    let result;
+    try {
+      result = await processSource(source, productRunState);
+    } catch (err) {
+      // 発見そのものが落ちた場合。これまで通り実行は中断するが、
+      // 「このソースはこの日見に行けなかった」という事実は先に残す。
+      await recordScrapeRun(
+        source,
+        runId,
+        startedAt,
+        { discovered: 0, recorded: 0, priceChanged: 0, skipped: 0, failed: 0 },
+        `失敗: ${err.message}`
+      );
+      throw err;
+    }
+    await recordScrapeRun(source, runId, startedAt, result);
     totals.discovered += result.discovered;
     totals.recorded += result.recorded;
     totals.priceChanged += result.priceChanged;

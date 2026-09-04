@@ -1,0 +1,67 @@
+/* 配色・影などのデザイントークンだけを置く場所。
+   index.html(ダッシュボード)と analysis.html(分析)の2ページが同じ値を使う。
+   どちらかに直接書くと、片方だけ色が変わった状態に気づけないため、
+   ここに1か所だけ置いて両方から読み込む。レイアウトは各ページ側にある。 */
+:root {
+  --bg: #f7f7f8;
+  --surface: #ffffff;
+  --border: #e5e5ea;
+  --text: #1c1c1e;
+  --text-muted: #6b6b70;
+  --up: #d1453b;
+  --down: #1f8a4c;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
+
+  /* Brand colors — deliberately distinct hues so a UNIQLO vs GU view is
+     unmistakable at a glance (tab, content accent bar, and every card's
+     left stripe all use this). */
+  --brand-uniqlo: #e2231a;
+  --brand-uniqlo-soft: #fbe4e2;
+  --brand-gu: #0057b8;
+  --brand-gu-soft: #dce9f9;
+
+  /* Status colors (event_type) — intentionally NOT reused as brand
+     colors; kept distinguishable from brand color by being applied as a
+     filled pill *label* near the top of a card, never as the card's
+     left stripe (that's always the brand color). first_markdown/
+     first_limited use a hue close to their parent markdown/limited color
+     (rather than an unrelated color like the old "new" green) so the
+     "this is a first-time-seen variant of 値下げ/期間限定, not a genuinely
+     new arrival" relationship reads visually, while staying distinct
+     enough not to be confused with the parent badge itself. */
+  --status-markdown: #c8342a;
+  --status-first_markdown: #d6336c;
+  --status-limited: #c96a12;
+  --status-first_limited: #a8790a;
+  --status-price_up: #7c3aed;
+
+  --tab-bg: #ececef;
+  --tab-hover: #dedee3;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a;
+    --surface: #202124;
+    --border: #33343780;
+    --text: #f0f0f2;
+    --text-muted: #a0a0a6;
+    --up: #ff7a6e;
+    --down: #4fd07a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.3);
+
+    --brand-uniqlo: #ff5449;
+    --brand-uniqlo-soft: #3a1f1c;
+    --brand-gu: #5b9bf5;
+    --brand-gu-soft: #1c2b3f;
+
+    --status-markdown: #ff6f63;
+    --status-first_markdown: #ff8fb3;
+    --status-limited: #f5a24d;
+    --status-first_limited: #e0b84d;
+    --status-price_up: #b794f6;
+
+    --tab-bg: #232427;
+    --tab-hover: #303138;
+  }
+}

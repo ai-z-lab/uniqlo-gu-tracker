@@ -6,71 +6,9 @@
   <title>UNIQLO / GU 価格トラッカー</title>
   <meta name="description" content="UNIQLO・GUの値下げ・期間限定価格・初値下げ・初期間限定・値上げをブランド/性別/カテゴリ別に一覧できる価格トラッカーです。" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏷️</text></svg>" />
+  <link rel="stylesheet" href="./theme.css" />
   <style>
-    :root {
-      --bg: #f7f7f8;
-      --surface: #ffffff;
-      --border: #e5e5ea;
-      --text: #1c1c1e;
-      --text-muted: #6b6b70;
-      --up: #d1453b;
-      --down: #1f8a4c;
-      --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
-
-      /* Brand colors — deliberately distinct hues so a UNIQLO vs GU view is
-         unmistakable at a glance (tab, content accent bar, and every card's
-         left stripe all use this). */
-      --brand-uniqlo: #e2231a;
-      --brand-uniqlo-soft: #fbe4e2;
-      --brand-gu: #0057b8;
-      --brand-gu-soft: #dce9f9;
-
-      /* Status colors (event_type) — intentionally NOT reused as brand
-         colors; kept distinguishable from brand color by being applied as a
-         filled pill *label* near the top of a card, never as the card's
-         left stripe (that's always the brand color). first_markdown/
-         first_limited use a hue close to their parent markdown/limited color
-         (rather than an unrelated color like the old "new" green) so the
-         "this is a first-time-seen variant of 値下げ/期間限定, not a genuinely
-         new arrival" relationship reads visually, while staying distinct
-         enough not to be confused with the parent badge itself. */
-      --status-markdown: #c8342a;
-      --status-first_markdown: #d6336c;
-      --status-limited: #c96a12;
-      --status-first_limited: #a8790a;
-      --status-price_up: #7c3aed;
-
-      --tab-bg: #ececef;
-      --tab-hover: #dedee3;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #17181a;
-        --surface: #202124;
-        --border: #33343780;
-        --text: #f0f0f2;
-        --text-muted: #a0a0a6;
-        --up: #ff7a6e;
-        --down: #4fd07a;
-        --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.3);
-
-        --brand-uniqlo: #ff5449;
-        --brand-uniqlo-soft: #3a1f1c;
-        --brand-gu: #5b9bf5;
-        --brand-gu-soft: #1c2b3f;
-
-        --status-markdown: #ff6f63;
-        --status-first_markdown: #ff8fb3;
-        --status-limited: #f5a24d;
-        --status-first_limited: #e0b84d;
-        --status-price_up: #b794f6;
-
-        --tab-bg: #232427;
-        --tab-hover: #303138;
-      }
-    }
-
+    /* 配色などのトークンは docs/theme.css(analysis.html と共用)。 */
     * { box-sizing: border-box; }
 
     body {
@@ -98,6 +36,22 @@
       color: var(--text-muted);
       font-size: 0.9rem;
     }
+
+    /* ダッシュボードと分析ページの行き来。タブ(ブランド/性別)とは別物なので、
+       押した状態を持つボタンではなくリンクとして見せる。 */
+    .page-nav {
+      margin-top: 0.6rem;
+      font-size: 0.85rem;
+    }
+
+    .page-nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1px;
+    }
+
+    .page-nav a:hover { color: var(--text); }
 
     main {
       max-width: 1080px;
@@ -633,6 +587,13 @@
         display: none;
       }
 
+      /* 説明文は消すが、ページ間のリンクは残す — 分析ページへの入口が
+         スマホから消えてしまうため。 */
+      .page-nav {
+        margin-top: 0.35rem;
+        font-size: 0.8rem;
+      }
+
       main {
         padding: 0.4rem 0.9rem 2.5rem;
       }
@@ -782,6 +743,7 @@
   <header>
     <h1>UNIQLO / GU 価格トラッカー</h1>
     <p>ブランド・性別・値下げ/期間限定/初値下げ/初期間限定/値上げ・カテゴリ別に商品を一覧できます。</p>
+    <nav class="page-nav"><a href="./analysis.html">周期表・値引きルールの検証 →</a></nav>
   </header>
   <main>
     <div class="tabs brand-tabs" id="brand-tabs">
