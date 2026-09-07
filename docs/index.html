@@ -238,6 +238,35 @@
       color: var(--text);
     }
 
+    /* 曜日タブ。値下げが実際に検出された曜日ぶんだけ出るので、本数はブランド・
+       性別によって変わる。ブランド/性別タブと違って等分割にしないのは、
+       「火曜(定例値下げ)」のような長いラベルが並ぶと、等分割では潰れるため。 */
+    .weekday-tabs {
+      flex-wrap: wrap;
+      margin-bottom: 0.9rem;
+    }
+
+    .weekday-tabs button {
+      flex: 0 1 auto;
+      font-size: 0.8rem;
+      padding: 0.4rem 0.7rem;
+    }
+
+    /* 選択中は性別タブと同じ「文字色で塗って反転」。ブランド色を使うと、
+       同じ画面の中でブランドタブと同じ強さの塗りが2箇所に出てしまう。 */
+    .weekday-tabs button.active {
+      background: var(--text);
+      color: var(--surface);
+    }
+
+    /* 曜日タブを開いたときの1行説明(その曜日に何回値下げがあったか)。 */
+    .weekday-lead {
+      margin: 0 0 0.8rem;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      line-height: 1.6;
+    }
+
     .weekday-rows {
       list-style: none;
       margin: 0;
@@ -383,6 +412,31 @@
 
     .category-group > .grid {
       padding: 0.8rem 0.9rem 0.9rem;
+    }
+
+    /* 買えない商品(終了した期間限定・在庫なし)の退避先。カテゴリの中にもう一段
+       畳んで置く。枠を点線にして文字を落とし、入れ子であることより「本編では
+       ない」が先に読めるようにする。 */
+    .category-group > .hidden-group {
+      margin: 0.6rem 0.9rem 0.9rem;
+      border-style: dashed;
+      background: transparent;
+    }
+
+    .category-group > .hidden-group > summary {
+      padding: 0.5rem 0.7rem;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    .category-group > .hidden-group > .grid {
+      padding: 0.7rem;
+    }
+
+    /* グリッドの下余白と退避先の上余白が二重にならないようにする
+       (:has が効かない環境では、余白が少し広く出るだけ)。 */
+    .category-group > .grid:has(+ .hidden-group) {
+      padding-bottom: 0.2rem;
     }
 
     .grid {
@@ -753,6 +807,20 @@
         line-height: 1.55;
       }
 
+      .weekday-tabs {
+        margin-bottom: 0.7rem;
+      }
+
+      .weekday-tabs button {
+        font-size: 0.72rem;
+        padding: 0.35rem 0.5rem;
+      }
+
+      .weekday-lead {
+        font-size: 0.68rem;
+        margin-bottom: 0.6rem;
+      }
+
       .category-group {
         margin-bottom: 0.4rem;
       }
@@ -764,6 +832,19 @@
 
       .category-group > .grid {
         padding: 0.6rem 0.6rem 0.7rem;
+      }
+
+      .category-group > .hidden-group {
+        margin: 0.5rem 0.6rem 0.7rem;
+      }
+
+      .category-group > .hidden-group > summary {
+        padding: 0.45rem 0.6rem;
+        font-size: 0.72rem;
+      }
+
+      .category-group > .hidden-group > .grid {
+        padding: 0.5rem;
       }
     }
 
