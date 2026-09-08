@@ -27,6 +27,33 @@ const EVENT_TYPE_CONFIG = [
   { key: "price_up", label: "値上げ" },
 ];
 
+// 各セクションを日付で切るときの「いつその状態になったか」。
+// - 値下げ: 直近の値下げ段階の日(＝いまの価格になった日)
+// - 初値下げ・初期間限定: このトラッカーが最初にその商品を確認した日
+// - 期間限定: いま出ている周期が始まった日
+// - 値上げ: 価格が実際に動いた最後の日
+const DATE_AXIS = {
+  markdown: (p) => {
+    const points = markdownStagePoints(p.history);
+    return points.length ? points[points.length - 1].scraped_at : null;
+  },
+  first_markdown: (p) => p.history[0]?.scraped_at ?? null,
+  first_limited: (p) => p.history[0]?.scraped_at ?? null,
+  limited: (p) => currentLimitedStartDate(p.history),
+  price_up: (p) => {
+    const points = priceStagePoints(p.history, null);
+    return points.length ? points[points.length - 1].scraped_at : null;
+  },
+};
+
+// 開いた直後に直近の日付で絞り込むセクション。「その日に新しく起きたこと」を
+// 並べるセクションはこちら、継続中のものを一覧するセクションは「すべて」から。
+const DEFAULT_TO_LATEST_DATE = new Set(["markdown", "first_markdown", "first_limited"]);
+
+// 日付で絞り込んだとき、この件数までのグループは開いた状態で出す。1日ぶんは
+// たいてい数件〜数十件で、そこで一段開かせるのはただの手間。
+const AUTO_OPEN_MAX = 30;
+
 const CATEGORY_ORDER = {
   uniqlo: ["トップス", "シャツ", "アウター", "パンツ", "ワンピース", "ビジネス", "インナー・ルームウェア", "その他"],
   gu: ["トップス", "アウター・パンツ", "ワンピース", "グッズ・その他"],
@@ -106,10 +133,44 @@ const shortEndDateFormatter = new Intl.DateTimeFormat("ja-JP", {
   timeZone: "UTC",
 });
 
+// 2つの時点が日本時間で何日離れているか。時刻ではなく暦日の差で数えるので、
+// 巡回時刻が3:00の日と4:00の日をまたいでも「1日」がぶれない。
+function daysBetween(fromIso, toIso) {
+  const from = jstDayOf(fromIso);
+  const to = jstDayOf(toIso);
+  if (!from || !to) return null;
+  return Math.round((new Date(`${to}T00:00:00Z`) - new Date(`${from}T00:00:00Z`)) / (24 * 60 * 60 * 1000));
+}
+
+// 「21日ぶり」「3週間ぶり」— 直前の段階からどれだけ空いたか。2週間を超えたら
+// 週で言い換える。日数のままだと「35日」がどれくらいかを頭の中で割ることになる。
+function formatInterval(days) {
+  if (days === null || days <= 0) return null;
+  if (days < 14) return `${days}日ぶり`;
+  return `${Math.round(days / 7)}週間ぶり`;
+}
+
 // e.g. "¥1,990(7/8)→¥1,290(7/13)→¥990(7/28)→¥790(8/18)"
 function formatMarkdownStageHistory(points) {
   const fmt = currencyFormatter(points[0]?.currency ?? "JPY");
   return points.map((p) => `${fmt.format(p.price)}(${stageDateFormatter.format(new Date(p.scraped_at))})`).join(" → ");
+}
+
+// 値下げの段階を「何段階目・いくら・いつ・前回から何日」まで含めて組み立てる。
+// カード1枚で「いつ値下げになり、いまが何段階目で、前回からどれだけ空いたか」が
+// 読めるようにするためのもので、段階でグループを開いて回る必要をなくす。
+function markdownStageSteps(points) {
+  const fmt = currencyFormatter(points[0]?.currency ?? "JPY");
+  return points.map((point, i) => {
+    const gap = i === 0 ? null : daysBetween(points[i - 1].scraped_at, point.scraped_at);
+    return {
+      stage: i + 1,
+      price: fmt.format(point.price),
+      date: stageDateFormatter.format(new Date(point.scraped_at)),
+      gapDays: gap,
+      current: i === points.length - 1,
+    };
+  });
 }
 
 // The date this product was first ever recorded as 期間限定 (event_type
@@ -504,6 +565,22 @@ function renderCard(product) {
     facts.appendChild(typeTag);
   }
 
+  // 前回の値下げ(期間限定なら前回の周期)からどれだけ空いたか。カードを見た
+  // 瞬間に「今日きたばかりか、ずっと据え置きか」が分かるようにする。
+  const intervalText = formatInterval(
+    isMarkdownFamily && stagePoints.length > 1
+      ? daysBetween(stagePoints[stagePoints.length - 2].scraped_at, stagePoints[stagePoints.length - 1].scraped_at)
+      : isLimitedFamily && periods.length > 1
+        ? daysBetween(periods[periods.length - 2].from, periods[periods.length - 1].from)
+        : null
+  );
+  if (intervalText) {
+    const interval = document.createElement("span");
+    interval.className = "fact interval";
+    interval.textContent = intervalText;
+    facts.appendChild(interval);
+  }
+
   if (latest.stock_status === "stock_out") {
     const soldOut = document.createElement("span");
     soldOut.className = "fact sold-out";
@@ -565,12 +642,47 @@ function renderCard(product) {
   // 価格の推移は折れ線ではなく文字で出す。期間限定は終わると価格が戻るため、
   // 折れ線にすると戻りの上昇が値上げのように見えてしまうし、値下げ側も
   // 目盛りの無い線より実際の金額と日付が並んでいる方が読める。
-  const historyText = priceHistoryTextFor({ isMarkdownFamily, isLimitedFamily, stagePoints, periods, history });
-  if (historyText) {
-    const priceHistory = document.createElement("div");
-    priceHistory.className = "stage-history";
-    priceHistory.textContent = historyText;
-    card.appendChild(priceHistory);
+  if (isMarkdownFamily && stagePoints.length > 0) {
+    // 値下げは段階そのものが読みたい情報なので、1行のテキストではなく段階ごとの
+    // 塊にする。「1段階目 ¥3,490 8/4 → 2段階目 ¥2,990 8/11(7日後)」のように、
+    // 何段階目・いくら・いつ・前回からどれだけ空いたかが1枚で追える。
+    const timeline = document.createElement("div");
+    timeline.className = "stage-history stage-timeline";
+    const steps = markdownStageSteps(stagePoints);
+    steps.forEach((step, i) => {
+      if (i > 0) {
+        const arrow = document.createElement("span");
+        arrow.className = "stage-arrow";
+        arrow.textContent = "→";
+        timeline.appendChild(arrow);
+      }
+      const el = document.createElement("span");
+      el.className = `stage-step${step.current ? " current" : ""}`;
+      const stage = document.createElement("span");
+      stage.className = "stage-no";
+      stage.textContent = `${step.stage}段階目`;
+      el.appendChild(stage);
+      const price = document.createElement("span");
+      price.className = "stage-price";
+      price.textContent = step.price;
+      el.appendChild(price);
+      const date = document.createElement("span");
+      date.className = "stage-date";
+      // 2段階目以降は前の段階からの間隔を添える。ここが「前回の値下げから
+      // どれだけ空いたか」を段階ごとに示す部分。
+      date.textContent = step.gapDays ? `${step.date}(${step.gapDays}日後)` : step.date;
+      el.appendChild(date);
+      timeline.appendChild(el);
+    });
+    card.appendChild(timeline);
+  } else {
+    const historyText = priceHistoryTextFor({ isMarkdownFamily, isLimitedFamily, stagePoints, periods, history });
+    if (historyText) {
+      const priceHistory = document.createElement("div");
+      priceHistory.className = "stage-history";
+      priceHistory.textContent = historyText;
+      card.appendChild(priceHistory);
+    }
   }
 
   return card;
@@ -683,7 +795,9 @@ function buildUnbuyableGroup(products) {
   return group;
 }
 
-function appendProductGroup(section, labelText, products, { breakdown = false } = {}) {
+// open: 最初から開いた状態で描く(日付で絞り込んだ直後など、件数が少なく
+// 「開く」操作がただの手間になる場面用)。
+function appendProductGroup(section, labelText, products, { breakdown = false, open = false } = {}) {
   // 買えるものだけを一覧の主役にする。終了した期間限定と在庫なしは、開かないと
   // 出てこない位置(グループ内の「終了・在庫なし」)へ落とす。見出しの件数も
   // 買えるものだけを数える — 「12件」を開いたら8件がもう買えなかった、が
@@ -729,8 +843,8 @@ function appendProductGroup(section, labelText, products, { breakdown = false } 
   // 超のカードがDOMに載るが、実際に開かれるのはそのうちのごく一部。初めて
   // 開かれた時に一度だけ描く。
   let rendered = false;
-  group.addEventListener("toggle", () => {
-    if (!group.open || rendered) return;
+  const renderBody = () => {
+    if (rendered) return;
     rendered = true;
     if (buyable.length > 0) {
       const grid = document.createElement("div");
@@ -746,7 +860,18 @@ function appendProductGroup(section, labelText, products, { breakdown = false } 
       group.appendChild(grid);
     }
     if (unbuyable.length > 0) group.appendChild(buildUnbuyableGroup(unbuyable));
+  };
+
+  group.addEventListener("toggle", () => {
+    if (group.open) renderBody();
   });
+
+  // toggle イベント経由ではなく直接描く。開いた状態を先に立ててからだと、
+  // イベントが飛ぶ前に読まれてカードが無いように見えることがある。
+  if (open) {
+    group.open = true;
+    renderBody();
+  }
 
   section.appendChild(group);
 }
@@ -1026,21 +1151,15 @@ function renderContent() {
     header.appendChild(count);
     section.appendChild(header);
 
-    // 「いつその状態になったか」— 値下げは直近の値下げ段階の日、期間限定は
-    // いま出ている周期の開始日。日付チップの集計にも絞り込みにも同じ関数を使う。
-    const dateOf =
-      eventConfig.key === "markdown"
-        ? (p) => {
-            const points = markdownStagePoints(p.history);
-            return points.length ? points[points.length - 1].scraped_at : null;
-          }
-        : eventConfig.key === "limited"
-          ? (p) => currentLimitedStartDate(p.history)
-          : null;
+    const dateOf = DATE_AXIS[eventConfig.key] ?? null;
 
     const chipsHost = document.createElement("div");
     const groupsHost = document.createElement("div");
-    let selectedDate = null; // 日本時間の暦日、null は「すべて」
+    const dateEntries = dateOf ? groupProductsByDate(buyableProducts, dateOf) : [];
+    // 既定は直近の日付。「今日は何が値下げになったか」がこのダッシュボードを
+    // 開く理由なので、全期間を混ぜた一覧より先にその日の分を出す。継続中の
+    // オファーをまとめて見るセクション(期間限定・値上げ)だけは「すべて」から。
+    let selectedDate = DEFAULT_TO_LATEST_DATE.has(eventConfig.key) ? (dateEntries[0]?.key ?? null) : null;
 
     const renderGroups = () => {
       groupsHost.innerHTML = "";
@@ -1071,7 +1190,11 @@ function renderContent() {
           byStage.get(stage).push(product);
         }
         for (const stage of [...byStage.keys()].sort((a, b) => a - b)) {
-          appendProductGroup(groupsHost, `${stage}段階目`, byStage.get(stage));
+          const group = byStage.get(stage);
+          appendProductGroup(groupsHost, `${stage}段階目`, group, {
+            // その日に絞り込んでいて件数が少なければ、開く操作は手間でしかない。
+            open: selectedDate !== null && group.filter((p) => !p.hidden).length <= AUTO_OPEN_MAX,
+          });
         }
       } else {
         const byCategoryNow = new Map();
@@ -1080,10 +1203,12 @@ function renderContent() {
           byCategoryNow.get(product.category).push(product);
         }
         for (const category of categoryOrderFor(state.brand, [...byCategoryNow.keys()])) {
-          appendProductGroup(groupsHost, category, byCategoryNow.get(category), {
-            // 日付で絞り込んでいる間は、その日の商品が何回目の期間限定なのかを
-            // カテゴリの見出しに添える。
-            breakdown: selectedDate !== null,
+          const group = byCategoryNow.get(category);
+          appendProductGroup(groupsHost, category, group, {
+            // 期間限定は「何回目の周期か」が段階に相当する。初値下げ・初期間限定は
+            // 定義上いつも1回目なので、内訳を出しても情報が増えない。
+            breakdown: selectedDate !== null && eventConfig.key === "limited",
+            open: selectedDate !== null && group.filter((p) => !p.hidden).length <= AUTO_OPEN_MAX,
           });
         }
       }
@@ -1099,7 +1224,7 @@ function renderContent() {
     if (dateOf) {
       const renderChips = () => {
         chipsHost.innerHTML = "";
-        appendDateFilter(chipsHost, groupProductsByDate(buyableProducts, dateOf), {
+        appendDateFilter(chipsHost, dateEntries, {
           selected: selectedDate,
           onSelect: (day) => {
             selectedDate = day;

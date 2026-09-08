@@ -653,6 +653,10 @@
       margin-bottom: 0.3rem;
     }
 
+    /* 「21日ぶり」— 前回の値下げ(周期)からの間隔。割引率(緑)と競合しないよう、
+       色は付けず文字色だけ通常の濃さにする。 */
+    .fact.interval { color: var(--text); }
+
     .fact.member { color: var(--status-limited); }
     .fact.remarkdown { color: var(--down); }
     .fact.sold-out { color: var(--text-muted); }
@@ -687,6 +691,55 @@
       font-variant-numeric: tabular-nums;
       line-height: 1.5;
       word-break: break-word;
+    }
+
+    /* 値下げの段階。1段階＝1つの塊にして、何段階目・いくら・いつ(前回から
+       何日後)を縦に積む。塊のあいだに矢印を挟み、狭い画面では折り返す。 */
+    .stage-timeline {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 0.3rem 0.4rem;
+    }
+
+    .stage-step {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.35;
+      color: var(--text-muted);
+    }
+
+    /* いまの段階だけ色を落とさない。過去の段階は経緯であって、いま買える価格は
+       これ、が読み違えられないようにする。 */
+    .stage-step.current {
+      color: var(--text);
+    }
+
+    .stage-no {
+      font-size: 0.66rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .stage-step.current .stage-no {
+      color: var(--status-markdown);
+    }
+
+    .stage-price {
+      font-size: 0.82rem;
+      font-weight: 700;
+    }
+
+    .stage-date {
+      font-size: 0.66rem;
+      font-weight: 600;
+      opacity: 0.85;
+    }
+
+    .stage-arrow {
+      align-self: center;
+      color: var(--text-muted);
+      font-size: 0.7rem;
     }
 
     .empty {
@@ -813,6 +866,21 @@
       .stage-history {
         font-size: 0.68rem;
         line-height: 1.4;
+      }
+
+      /* 2列の狭いカードでは、段階の塊が3〜5個並ぶと矢印ごと潰れる。
+         文字を詰めて、折り返しの間隔も狭くする。 */
+      .stage-timeline {
+        gap: 0.2rem 0.3rem;
+      }
+
+      .stage-no,
+      .stage-date {
+        font-size: 0.6rem;
+      }
+
+      .stage-price {
+        font-size: 0.72rem;
       }
 
       .updated-full { display: none; }
