@@ -204,9 +204,9 @@
       font-size: 0.85rem;
     }
 
-    /* "直近で値下げ/期間限定入りが確認された日" strip at the top of the 値下げ/
-       期間限定 sections — a lightweight, non-interactive summary, not a filter
-       control. */
+    /* "直近で値下げ/期間限定入りが確認された日" の帯。押すとその日に絞り込む
+       フィルタで、読むだけの一覧ではない(「今日値下げされたのはどれで、それぞれ
+       何段階目か」は、日付で切れないと答えが出ないため)。 */
     .date-summary {
       display: flex;
       flex-wrap: wrap;
@@ -215,15 +215,36 @@
     }
 
     .date-chip {
+      appearance: none;
       display: inline-block;
+      font-family: inherit;
       font-size: 0.72rem;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
       color: var(--status-color);
+      background: transparent;
       border: 1px solid var(--status-color);
       border-radius: 999px;
       padding: 0.15rem 0.6rem;
       white-space: nowrap;
+      cursor: pointer;
+      transition: background-color 0.15s, color 0.15s;
+    }
+
+    .date-chip:hover:not(.active) {
+      background: var(--tab-hover);
+    }
+
+    /* 選択中は塗りつぶし。枠線だけの違いにすると、7〜14個並んだときにどれを
+       押しているのか分からない。 */
+    .date-chip.active {
+      background: var(--status-color);
+      color: var(--surface);
+    }
+
+    .date-chip:focus-visible {
+      outline: 2px solid var(--text);
+      outline-offset: 2px;
     }
 
     /* --- 曜日別の価格変動 ---
@@ -389,6 +410,17 @@
     .category-group .group-label {
       flex: 1;
       min-width: 0;
+    }
+
+    /* 見出しに添える段階の内訳(「2段階目3・5段階目4」)。見出しそのものより
+       弱く、しかし件数と同じ行で読めるように。 */
+    .group-sub {
+      display: block;
+      margin-top: 0.1rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
     }
 
     .group-count {
@@ -828,6 +860,10 @@
       .category-group > summary {
         padding: 0.65rem 0.7rem;
         font-size: 0.8rem;
+      }
+
+      .group-sub {
+        font-size: 0.66rem;
       }
 
       .category-group > .grid {
