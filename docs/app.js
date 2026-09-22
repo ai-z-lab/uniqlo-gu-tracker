@@ -62,8 +62,14 @@ const CATEGORY_ORDER = {
 // 曜日タブの「すべて」。数値(0=日〜6=土)と混ざらない値にしておく。
 const ALL_WEEKDAYS = "all";
 
-let state = { brand: "uniqlo", gender: "men", weekday: ALL_WEEKDAYS };
+let state = { brand: "uniqlo", gender: "men", weekday: ALL_WEEKDAYS, query: "" };
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
+
+// gender 列の 'unisex'(男女兼用)は、MEN・WOMEN どちらのタブにも出す。
+// 行は1商品1本のまま、表示先を2つにする(buildIndex)。どちらのタブで見ても
+// 男女兼用だと分かるよう、カードには「ユニセックス」のバッジを付ける。
+const UNISEX = "unisex";
+const TAB_GENDERS = ["men", "women"];
 
 const currencyFormatter = (currency) =>
   new Intl.NumberFormat("ja-JP", { style: "currency", currency, maximumFractionDigits: 0 });
@@ -273,6 +279,27 @@ function jstDayOf(value) {
   return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+// --- 商品名検索 ---------------------------------------------------------------
+
+// 検索の突き合わせ用に表記ゆれを畳む。NFKC で全角英数・半角カナを揃え、
+// 大文字小文字を無視し、ひらがなはカタカナに寄せる(商品名はカタカナ表記が
+// ほとんどで、「ぱーか」と打っても「パーカ」に当たってほしいため)。
+function normalizeForSearch(text) {
+  return text
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u3041-\u3096]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 0x60));
+}
+
+// 空白で区切った語をすべて含む商品だけを残す(AND 検索)。
+function searchTermsOf(query) {
+  return normalizeForSearch(query).split(/\s+/).filter(Boolean);
+}
+
+function matchesSearch(product, terms) {
+  return terms.every((term) => product.searchText.includes(term));
+}
+
 // 期間限定価格が終了しているか。limited_price_end_date は「その日まで有効」
 // なので、終了日そのものはまだ有効。翌日から終了とみなす。
 function isLimitedOfferOver(row, todayJst) {
@@ -414,12 +441,9 @@ function buildIndex(rows) {
     const gender = latest.gender || "unknown";
     const eventType = latest.event_type || "markdown";
     const category = latest.category || (brand === "gu" ? "グッズ・その他" : "その他");
+    const unisex = gender === UNISEX;
 
-    idx[brand] ??= {};
-    idx[brand][gender] ??= {};
-    idx[brand][gender][eventType] ??= {};
-    idx[brand][gender][eventType][category] ??= [];
-    idx[brand][gender][eventType][category].push({
+    const product = {
       latest,
       history,
       // カテゴリはこの時点で解決済み(latest.category が空なら既定値)。日付で
@@ -429,7 +453,20 @@ function buildIndex(rows) {
       unconfirmed,
       soldOut,
       hidden,
-    });
+      unisex,
+      searchText: normalizeForSearch(`${latest.product_name ?? ""} ${latest.product_id}`),
+    };
+
+    // 男女兼用の商品は同じオブジェクトを両方のタブに載せる(複製はしない)。
+    // 振り分けは最新行の gender だけで決まるので、男女兼用として記録される前の
+    // 古い行が 'women' のままでも、表示には影響しない。
+    for (const tabGender of unisex ? TAB_GENDERS : [gender]) {
+      idx[brand] ??= {};
+      idx[brand][tabGender] ??= {};
+      idx[brand][tabGender][eventType] ??= {};
+      idx[brand][tabGender][eventType][category] ??= [];
+      idx[brand][tabGender][eventType][category].push(product);
+    }
   }
   return idx;
 }
@@ -486,6 +523,11 @@ function renderCard(product) {
   const stagePoints = isMarkdownFamily ? markdownStagePoints(history) : [];
   const periods = isLimitedFamily ? limitedPeriods(history) : [];
 
+  // バッジ(状態・ユニセックス・終了/未確認)はひとまとめにして折り返させる。
+  // 横に並べたままだと、3つ並んだ時に商品名の幅が1〜2文字まで潰れる。
+  const badges = document.createElement("div");
+  badges.className = "badges";
+
   const eventConfig = EVENT_TYPE_CONFIG.find((e) => e.key === latest.event_type);
   if (eventConfig) {
     const badge = document.createElement("span");
@@ -496,7 +538,14 @@ function renderCard(product) {
     // information for a *follow-up* observation — append it there instead of
     // duplicating "(1段階目)" on every 初値下げ badge.
     badge.textContent = `${eventConfig.label}${countSuffixFor(latest.event_type, stagePoints, periods)}`;
-    topRow.appendChild(badge);
+    badges.appendChild(badge);
+  }
+
+  if (product.unisex) {
+    const unisex = document.createElement("span");
+    unisex.className = "state-badge unisex";
+    unisex.textContent = "ユニセックス";
+    badges.appendChild(unisex);
   }
 
   // 期間限定が終了日を過ぎている場合は、それを最優先で伝える。価格行はもう
@@ -505,13 +554,14 @@ function renderCard(product) {
     const over = document.createElement("span");
     over.className = "state-badge over";
     over.textContent = "終了";
-    topRow.appendChild(over);
+    badges.appendChild(over);
   } else if (unconfirmed) {
     const stale = document.createElement("span");
     stale.className = "state-badge stale";
     stale.textContent = "未確認";
-    topRow.appendChild(stale);
+    badges.appendChild(stale);
   }
+  if (badges.childElementCount > 0) topRow.appendChild(badges);
   card.appendChild(topRow);
 
   const priceRow = document.createElement("div");
@@ -1124,13 +1174,78 @@ function renderContent() {
     EVENT_TYPE_CONFIG.flatMap((e) => Object.values(bucket[e.key] || {}).flat())
   );
 
+  // 検索はセクションの一覧だけに効かせる。曜日別の集計は「このブランド・性別で
+  // いつ値下げが来るか」を答えるもので、検索語で母数が変わると意味が変わるため。
+  // 検索欄はセクションの真上に置き、何に効くのかを位置で示す。
+  const sectionsHost = document.createElement("div");
+  // セクションごとに、利用者が日付チップで選んだ日。検索語を打ち直すたびに
+  // セクションを描き直すので、選んだ日付はここで持ち越す(ブランド・性別を
+  // 切り替えたら、この関数ごと作り直されて既定に戻る)。
+  const chosenDates = new Map(); // event_type -> "YYYY-MM-DD" | null
+  const searchCount = appendSearchBar(contentEl, () => renderSections(sectionsHost, bucket, chosenDates, searchCount));
+  contentEl.appendChild(sectionsHost);
+  renderSections(sectionsHost, bucket, chosenDates, searchCount);
+}
+
+// 商品名検索の入力欄。入力のたびに onChange を呼ぶ(描き直すのはセクション
+// だけで、この欄自体は作り直さないので、打っている途中でフォーカスが外れない)。
+// 返すのは一致件数を書き込む要素。
+function appendSearchBar(container, onChange) {
+  const bar = document.createElement("div");
+  bar.className = "search-bar";
+
+  const input = document.createElement("input");
+  input.type = "search";
+  input.className = "search-input";
+  input.placeholder = "商品名・商品番号で検索(空白区切りで絞り込み)";
+  input.setAttribute("aria-label", "商品名・商品番号で検索");
+  input.value = state.query;
+  bar.appendChild(input);
+
+  const count = document.createElement("span");
+  count.className = "search-count";
+  count.setAttribute("aria-live", "polite");
+  bar.appendChild(count);
+
+  let timer = null;
+  const apply = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (input.value === state.query) return;
+      state = { ...state, query: input.value };
+      onChange();
+    }, 150);
+  };
+  // 日本語入力の変換中(未確定の文字)で描き直すと、候補選びの途中で一覧が
+  // 揺れる。確定してから反映する。
+  input.addEventListener("input", (e) => {
+    if (!e.isComposing) apply();
+  });
+  input.addEventListener("compositionend", apply);
+
+  container.appendChild(bar);
+  return count;
+}
+
+function renderSections(host, bucket, chosenDates, searchCountEl) {
+  host.innerHTML = "";
+  const terms = searchTermsOf(state.query);
+  const searching = terms.length > 0;
+  const matchedIds = new Set();
+
   for (const eventConfig of EVENT_TYPE_CONFIG) {
     const byCategory = bucket[eventConfig.key];
     if (!byCategory) continue;
     const categories = Object.keys(byCategory);
     if (categories.length === 0) continue;
 
-    const allProducts = categories.flatMap((c) => byCategory[c]);
+    const allProducts = categories
+      .flatMap((c) => byCategory[c])
+      .filter((p) => !searching || matchesSearch(p, terms));
+    // 検索中に1件も当たらないセクションは出さない。見出しだけ並んでも読む
+    // ところが無い。
+    if (allProducts.length === 0) continue;
+    for (const p of allProducts) matchedIds.add(p.latest.product_id);
     // 見出しにもチップにも「いま買えるもの」だけを数えて出す。終了・在庫なしは
     // カテゴリの中の折りたたみに落ちているので、何件あるかは括弧で添える
     // (件数の書き込みは renderGroups が担当 — 絞り込みで変わるため)。
@@ -1159,7 +1274,19 @@ function renderContent() {
     // 既定は直近の日付。「今日は何が値下げになったか」がこのダッシュボードを
     // 開く理由なので、全期間を混ぜた一覧より先にその日の分を出す。継続中の
     // オファーをまとめて見るセクション(期間限定・値上げ)だけは「すべて」から。
-    let selectedDate = DEFAULT_TO_LATEST_DATE.has(eventConfig.key) ? (dateEntries[0]?.key ?? null) : null;
+    //
+    // 検索中は「すべて」から。商品名で探しているときは、その商品がいつ値下げ
+    // されたかはまだ分からない。日付チップは検索結果に対して出るので、そこから
+    // さらに日付で絞れる。
+    const chosen = chosenDates.get(eventConfig.key);
+    let selectedDate =
+      chosen !== undefined && (chosen === null || dateEntries.some((e) => e.key === chosen))
+        ? chosen
+        : !searching && DEFAULT_TO_LATEST_DATE.has(eventConfig.key)
+          ? (dateEntries[0]?.key ?? null)
+          : null;
+    // 絞り込み(日付・検索)の結果が少なければ、グループを開いた状態で出す。
+    const narrowed = () => selectedDate !== null || searching;
 
     const renderGroups = () => {
       groupsHost.innerHTML = "";
@@ -1193,7 +1320,7 @@ function renderContent() {
           const group = byStage.get(stage);
           appendProductGroup(groupsHost, `${stage}段階目`, group, {
             // その日に絞り込んでいて件数が少なければ、開く操作は手間でしかない。
-            open: selectedDate !== null && group.filter((p) => !p.hidden).length <= AUTO_OPEN_MAX,
+            open: narrowed() && group.filter((p) => !p.hidden).length <= AUTO_OPEN_MAX,
           });
         }
       } else {
@@ -1208,7 +1335,7 @@ function renderContent() {
             // 期間限定は「何回目の周期か」が段階に相当する。初値下げ・初期間限定は
             // 定義上いつも1回目なので、内訳を出しても情報が増えない。
             breakdown: selectedDate !== null && eventConfig.key === "limited",
-            open: selectedDate !== null && group.filter((p) => !p.hidden).length <= AUTO_OPEN_MAX,
+            open: narrowed() && group.filter((p) => !p.hidden).length <= AUTO_OPEN_MAX,
           });
         }
       }
@@ -1216,7 +1343,9 @@ function renderContent() {
       if (shown.length === 0) {
         const empty = document.createElement("div");
         empty.className = "empty";
-        empty.textContent = "この日に確認された商品はありません。";
+        empty.textContent = searching
+          ? "この日に確認された商品に、検索に一致するものはありません。"
+          : "この日に確認された商品はありません。";
         groupsHost.appendChild(empty);
       }
     };
@@ -1228,6 +1357,7 @@ function renderContent() {
           selected: selectedDate,
           onSelect: (day) => {
             selectedDate = day;
+            chosenDates.set(eventConfig.key, day);
             renderChips();
             renderGroups();
           },
@@ -1240,7 +1370,15 @@ function renderContent() {
     renderGroups();
     section.appendChild(groupsHost);
 
-    contentEl.appendChild(section);
+    host.appendChild(section);
+  }
+
+  searchCountEl.textContent = searching ? `${countFormatter.format(matchedIds.size)}件が一致` : "";
+  if (searching && matchedIds.size === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = `「${state.query.trim()}」に一致する商品はありません。`;
+    host.appendChild(empty);
   }
 }
 

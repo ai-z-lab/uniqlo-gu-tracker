@@ -204,6 +204,43 @@
       font-size: 0.85rem;
     }
 
+    /* 商品名検索。曜日別パネルの下、セクション一覧の真上に置く(効くのは
+       セクションの一覧だけ)。 */
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      margin: 0 0 1.25rem;
+    }
+
+    .search-input {
+      flex: 1;
+      min-width: 0;
+      font: inherit;
+      font-size: 0.9rem;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.55rem 0.8rem;
+    }
+
+    .search-input::placeholder { color: var(--text-muted); }
+
+    .search-input:focus-visible {
+      outline: 2px solid var(--text);
+      outline-offset: 1px;
+    }
+
+    .search-count {
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .search-count:empty { display: none; }
+
     /* "直近で値下げ/期間限定入りが確認された日" の帯。押すとその日に絞り込む
        フィルタで、読むだけの一覧ではない(「今日値下げされたのはどれで、それぞれ
        何段階目か」は、日付で切れないと答えが出ないため)。 */
@@ -533,6 +570,21 @@
       margin-bottom: 0.5rem;
     }
 
+    .card .top-row h2 {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    /* バッジ群は右上に寄せ、並びきらなければ折り返す。幅に上限を付けて、
+       商品名の側に最低限の幅を残す。 */
+    .card .badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 0.3rem;
+      max-width: 55%;
+    }
+
     /* Status badge: a filled pill with text, positioned top-right — a
        different shape *and* position from the brand stripe, so brand vs
        status stay visually distinct even when their colors are close. */
@@ -640,6 +692,13 @@
 
     .state-badge.over { color: var(--text); }
     .state-badge.stale { color: var(--text-muted); }
+    /* 男女兼用。MEN・WOMEN どちらのタブにも出る商品なので、状態(終了・未確認)
+       の枠線バッジと見分けがつくよう、枠ではなく面で出す。 */
+    .state-badge.unisex {
+      color: var(--text);
+      background: var(--tab-bg);
+      border-color: transparent;
+    }
 
     .end-date.over {
       color: var(--text-muted);
@@ -810,6 +869,11 @@
         align-items: flex-start;
         gap: 0.3rem;
         margin-bottom: 0.35rem;
+      }
+
+      .card .badges {
+        justify-content: flex-start;
+        max-width: none;
       }
 
       /* 商品名は2行まで。長い名前が1枚だけ縦に伸びると、隣の列との段差が

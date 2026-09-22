@@ -1180,6 +1180,11 @@ async function extractViaApi(source, item, log = () => {}) {
   return {
     url,
     name: item?.name ?? productId,
+    // 男女兼用の商品は、MEN一覧とWOMEN一覧の両方に同じ商品として載っている。
+    // どちらの一覧で見つけたかではなく、商品自身の区分で記録する(recordExtractedProduct)。
+    // 表示名は GU が「ユニセックス」、UNIQLO が「男女兼用」と違うので、機械可読な
+    // genderCategory の方を見る。
+    unisex: item?.genderCategory === 'UNISEX',
     price: priced.price,
     currency: priced.currency,
     listPrice: priced.listPrice,
@@ -1216,18 +1221,22 @@ async function mapWithConcurrency(items, limit, worker) {
 
 // --- Recording price events ---
 
-async function fetchLatestRecordedPrice(productId) {
-  const { data, error } = await supabase
+// before を渡すと、その時刻より前の行に限って最新を返す。
+async function fetchLatestRecordedPrice(productId, { before = null } = {}) {
+  let query = supabase
     .from('price_events')
     .select('id, price, currency, price_type, limited_price_end_date, scraped_at')
-    .eq('product_id', productId)
-    .order('scraped_at', { ascending: false })
-    .limit(1);
+    .eq('product_id', productId);
+  if (before) query = query.lt('scraped_at', before);
+  const { data, error } = await query.order('scraped_at', { ascending: false }).limit(1);
   if (error) throw error;
   return data?.[0] ?? null;
 }
 
 const jstDay = (iso) => new Date(new Date(iso).getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+// iso が属する日本時間の暦日の 0:00 を ISO で返す。
+const jstDayStartIso = (iso) => new Date(`${jstDay(iso)}T00:00:00+09:00`).toISOString();
 
 // Same JST calendar day, i.e. was the last row for this product recorded on
 // today's date already? Used to collapse re-runs (manual re-triggers, the
@@ -1272,6 +1281,38 @@ function applyRemarkdown(priceType, previousPriceType, log = () => {}) {
   if (previousPriceType !== 'markdown' && previousPriceType !== 'remarkdown') return priceType;
   log(`price type refined to 'remarkdown' (previous observation was '${previousPriceType}')`);
   return 'remarkdown';
+}
+
+// 'unisex' は 0007 のマイグレーションで gender の CHECK 制約に足した値。
+// マイグレーションは手で当てる運用なので、当てる前にこのコードが走ると、
+// 男女兼用の商品は CHECK 違反で1件も記録できなくなる(記録そのものが消える方が、
+// 性別がずれるより被害が大きい)。その場合だけ、見つけた一覧の性別で書き直す。
+const CHECK_VIOLATION = '23514';
+let warnedUnisexNotMigrated = false;
+
+async function writePriceEventRow(row, existingRowId, source) {
+  const write = async (r) => {
+    if (existingRowId) {
+      const { error } = await supabase.from('price_events').update(r).eq('id', existingRowId);
+      return { id: existingRowId, error };
+    }
+    const { data, error } = await supabase.from('price_events').insert(r).select('id').single();
+    return { id: data?.id, error };
+  };
+
+  let result = await write(row);
+  if (result.error?.code === CHECK_VIOLATION && row.gender === 'unisex') {
+    if (!warnedUnisexNotMigrated) {
+      warnedUnisexNotMigrated = true;
+      console.warn(
+        "!! gender='unisex' が CHECK 制約で拒否されました。" +
+          'supabase/migrations/0007_add_unisex_gender.sql が未適用です。適用するまでは一覧の性別で記録します。'
+      );
+    }
+    result = await write({ ...row, gender: source.gender ?? null });
+  }
+  if (result.error) throw result.error;
+  return result.id;
 }
 
 // Records one observation per product on *every* scrape (not only when the
@@ -1342,11 +1383,20 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     existingRowId = existing.rowId;
   } else {
     const latest = await fetchLatestRecordedPrice(productId);
-    isNewProduct = !latest;
-    previousPrice = latest?.price ?? null;
-    previousCurrency = latest?.currency ?? null;
-    previousPriceType = previousPriceTypeOf(latest);
-    existingRowId = latest && isSameJstCalendarDay(latest.scraped_at, nowIso) ? latest.id : null;
+    const recordedToday = latest && isSameJstCalendarDay(latest.scraped_at, nowIso);
+    existingRowId = recordedToday ? latest.id : null;
+    // 今日の行はこの行で上書きする相手であって、比べる相手ではない。今日の行と
+    // 比べると、1日2回の巡回の2回目は「前回＝さっき自分で書いた行」と比べることに
+    // なり、1回目が付けた 初値下げ/初期間限定/値上げ/再値下げ を「変化なし」で
+    // 上書きして消してしまう(2026-09 に初値下げが一件も出なくなっていた原因)。
+    // 比較は常に前日以前の最新行とし、同じ日に何度走っても判定が変わらないようにする。
+    const baseline = recordedToday
+      ? await fetchLatestRecordedPrice(productId, { before: jstDayStartIso(nowIso) })
+      : latest;
+    isNewProduct = !baseline;
+    previousPrice = baseline?.price ?? null;
+    previousCurrency = baseline?.currency ?? null;
+    previousPriceType = previousPriceTypeOf(baseline);
   }
 
   // Read off the page, then refined against this product's own history.
@@ -1366,7 +1416,7 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     product_id: productId,
     product_name: extracted.name,
     brand: source.brand,
-    gender: source.gender ?? null,
+    gender: extracted.unisex ? 'unisex' : source.gender ?? null,
     category,
     event_type: eventType,
     url,
@@ -1380,16 +1430,7 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     scraped_at: nowIso,
   };
 
-  let rowId;
-  if (existingRowId) {
-    const { error: updateError } = await supabase.from('price_events').update(row).eq('id', existingRowId);
-    if (updateError) throw updateError;
-    rowId = existingRowId;
-  } else {
-    const { data, error: insertError } = await supabase.from('price_events').insert(row).select('id').single();
-    if (insertError) throw insertError;
-    rowId = data.id;
-  }
+  const rowId = await writePriceEventRow(row, existingRowId, source);
 
   // Only recorded as done-this-run on success, so if this attempt failed a
   // later occurrence of the same product still gets a chance.
