@@ -24,7 +24,14 @@ const EVENT_TYPE_CONFIG = [
   { key: "markdown", label: "値下げ" },
   { key: "first_limited", label: "初期間限定" },
   { key: "limited", label: "期間限定" },
-  { key: "price_up", label: "値上げ" },
+  {
+    key: "price_up",
+    label: "値上げ",
+    sectionLabel: "値上げ・価格改定",
+    note:
+      "値下げ中だった商品の価格が上がったものです(昨年モデルの秋の再販で処分価格から戻った場合など)。" +
+      "値上げ後も値下げ一覧に残っている商品は、次に値下げされるまでここに出ます。期間限定価格が終わって元の値下げ価格に戻っただけの商品は含みません。",
+  },
 ];
 
 // 各セクションを日付で切るときの「いつその状態になったか」。
@@ -32,23 +39,34 @@ const EVENT_TYPE_CONFIG = [
 // - 初値下げ・初期間限定: このトラッカーが最初にその商品を確認した日
 // - 期間限定: いま出ている周期が始まった日
 // - 値上げ: 価格が実際に動いた最後の日
+// 値下げ・値上げはどちらも「値下げ一覧側の価格が最後に動いた日」。値上げ
+// セクションに入るのは最後の動きが値上げだった商品だけなので、これが値上げ日になる。
+const lastMarkdownTrackChange = (p) => {
+  const points = markdownStagePoints(p.history);
+  return points.length ? points[points.length - 1].scraped_at : null;
+};
+
 const DATE_AXIS = {
-  markdown: (p) => {
-    const points = markdownStagePoints(p.history);
-    return points.length ? points[points.length - 1].scraped_at : null;
-  },
+  markdown: lastMarkdownTrackChange,
   first_markdown: (p) => p.history[0]?.scraped_at ?? null,
   first_limited: (p) => p.history[0]?.scraped_at ?? null,
   limited: (p) => currentLimitedStartDate(p.history),
-  price_up: (p) => {
-    const points = priceStagePoints(p.history, null);
-    return points.length ? points[points.length - 1].scraped_at : null;
-  },
+  price_up: lastMarkdownTrackChange,
+};
+
+// 日付チップで絞り込んだときの見出しの言い方。「に確認」だけだと、巡回で
+// 確認した日なのか値札が変わった日なのか分からない、という指摘があったため。
+const DATE_VERB = {
+  markdown: "に値下げ",
+  first_markdown: "に初めて値下げ一覧で確認",
+  limited: "から期間限定",
+  first_limited: "に初めて期間限定で確認",
+  price_up: "に値上げ",
 };
 
 // 開いた直後に直近の日付で絞り込むセクション。「その日に新しく起きたこと」を
 // 並べるセクションはこちら、継続中のものを一覧するセクションは「すべて」から。
-const DEFAULT_TO_LATEST_DATE = new Set(["markdown", "first_markdown", "first_limited"]);
+const DEFAULT_TO_LATEST_DATE = new Set(["markdown", "first_markdown", "first_limited", "price_up"]);
 
 // 日付で絞り込んだとき、この件数までのグループは開いた状態で出す。1日ぶんは
 // たいてい数件〜数十件で、そこで一段開かせるのはただの手間。
@@ -63,6 +81,7 @@ const CATEGORY_ORDER = {
 const ALL_WEEKDAYS = "all";
 
 let state = { brand: "uniqlo", gender: "men", weekday: ALL_WEEKDAYS };
+let allRows = [];
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
 
 const currencyFormatter = (currency) =>
@@ -110,10 +129,49 @@ function priceStagePoints(history, eventTypes) {
   return points;
 }
 
+// 値下げ一覧側の価格の流れには値上げ(price_up)の行も含める。
+//
+// 値下げ中の商品が値上げされる(昨年のAW商品が秋に再販され、処分価格から
+// 価格改定される等)と、スクレイパーが price_up と書くのはその日の1行だけで、
+// 翌日からはまた一覧由来の markdown になる。price_up を外すと、翌日の markdown
+// 行が「値上げ後の価格」を新しい値下げ段階として数えてしまっていた。
+// 期間限定が終わって元の値下げ価格に戻ったときも price_up になるが、その価格は
+// 期間限定の前の値下げ段階と同じなので、ここでは点が増えない。
+const MARKDOWN_TRACK_EVENT_TYPES = new Set([...MARKDOWN_EVENT_TYPES, "price_up"]);
+
 // A distinct "値下げ段階" — "3段階目" means "the 3rd distinct price this
 // product has had while markdown-listed", not "3 rows in the DB".
+// 前の点より高い点は up(値上げ)として持ち、段階には数えない。stage はその点の
+// 時点で何段階目か(値上げの点では直前の段階のまま)。
 function markdownStagePoints(history) {
-  return priceStagePoints(history, MARKDOWN_EVENT_TYPES);
+  const points = priceStagePoints(history, MARKDOWN_TRACK_EVENT_TYPES);
+  let stage = 0;
+  return points.map((point, i) => {
+    const up = i > 0 && point.price > points[i - 1].price;
+    if (!up) stage += 1;
+    return { ...point, up, stage };
+  });
+}
+
+function markdownStageCount(points) {
+  return points.length > 0 ? points[points.length - 1].stage : 0;
+}
+
+// 値下げ中だった商品が、直近の値動きで値上げされたか。期間限定の終了(元の
+// 値下げ価格に戻っただけ)はここに入らない — 上の markdownStagePoints を参照。
+function isRaisedFromMarkdown(points) {
+  return points.length > 1 && points[points.length - 1].up;
+}
+
+// どのセクションに出すか。基本は最新行の event_type(どの一覧で見つけたか)だが、
+// 値上げはその日1行しか price_up にならないため、履歴から決め直す。
+// - 値下げ中に値上げされ、そのあと値下げされていない → 値上げ(翌日以降も残す)
+// - price_up でも値下げ価格に戻っただけ(期間限定の終了) → 値下げ
+function sectionKeyOf(latest, history) {
+  const eventType = latest.event_type || "markdown";
+  if (LIMITED_EVENT_TYPES.has(eventType)) return eventType;
+  if (isRaisedFromMarkdown(markdownStagePoints(history))) return "price_up";
+  return eventType === "price_up" ? "markdown" : eventType;
 }
 
 // 値下げも期間限定も日本時間で回っているので、日付も日本時間で出す。
@@ -164,7 +222,8 @@ function markdownStageSteps(points) {
   return points.map((point, i) => {
     const gap = i === 0 ? null : daysBetween(points[i - 1].scraped_at, point.scraped_at);
     return {
-      stage: i + 1,
+      stage: point.stage,
+      up: point.up,
       price: fmt.format(point.price),
       date: stageDateFormatter.format(new Date(point.scraped_at)),
       gapDays: gap,
@@ -412,7 +471,7 @@ function buildIndex(rows) {
     const hidden = offerOver || soldOut;
     const brand = latest.brand;
     const gender = latest.gender || "unknown";
-    const eventType = latest.event_type || "markdown";
+    const eventType = sectionKeyOf(latest, history);
     const category = latest.category || (brand === "gu" ? "グッズ・その他" : "その他");
 
     idx[brand] ??= {};
@@ -425,6 +484,9 @@ function buildIndex(rows) {
       // カテゴリはこの時点で解決済み(latest.category が空なら既定値)。日付で
       // 絞り込んだあとにカテゴリで組み直すので、商品自身に持たせておく。
       category,
+      // 出しているセクション。値上げは最新行の event_type と一致しないことが
+      // ある(sectionKeyOf)ので、カードのバッジや段階の数え方はこちらを見る。
+      section: eventType,
       offerOver,
       unconfirmed,
       soldOut,
@@ -443,7 +505,7 @@ function categoryOrderFor(brand, categories) {
 
 // 値下げは「何段階目」、期間限定は「何回目」。1回目は定義上必ず1なので出さない。
 function countSuffixFor(eventType, stagePoints, periods) {
-  if (eventType === "markdown" && stagePoints.length > 0) return `(${stagePoints.length}段階目)`;
+  if (eventType === "markdown" && stagePoints.length > 0) return `(${markdownStageCount(stagePoints)}段階目)`;
   if (eventType === "limited" && periods.length > 1) return `(${periods.length}回目)`;
   return "";
 }
@@ -481,12 +543,16 @@ function renderCard(product) {
   title.textContent = latest.product_name || latest.product_id;
   topRow.appendChild(title);
 
-  const isMarkdownFamily = MARKDOWN_EVENT_TYPES.has(latest.event_type);
-  const isLimitedFamily = LIMITED_EVENT_TYPES.has(latest.event_type);
-  const stagePoints = isMarkdownFamily ? markdownStagePoints(history) : [];
+  const { section } = product;
+  const isMarkdownFamily = MARKDOWN_EVENT_TYPES.has(section);
+  const isLimitedFamily = LIMITED_EVENT_TYPES.has(section);
+  // 値上げも値下げと同じ流れの上にある(値下げ→値上げ→また値下げ…)ので、
+  // 段階のタイムラインをそのまま出す。
+  const isMarkdownTrack = isMarkdownFamily || section === "price_up";
+  const stagePoints = isMarkdownTrack ? markdownStagePoints(history) : [];
   const periods = isLimitedFamily ? limitedPeriods(history) : [];
 
-  const eventConfig = EVENT_TYPE_CONFIG.find((e) => e.key === latest.event_type);
+  const eventConfig = EVENT_TYPE_CONFIG.find((e) => e.key === section);
   if (eventConfig) {
     const badge = document.createElement("span");
     badge.className = "status-badge";
@@ -495,7 +561,7 @@ function renderCard(product) {
     // classifyEventType in scripts/scrape.mjs), so the count only adds
     // information for a *follow-up* observation — append it there instead of
     // duplicating "(1段階目)" on every 初値下げ badge.
-    badge.textContent = `${eventConfig.label}${countSuffixFor(latest.event_type, stagePoints, periods)}`;
+    badge.textContent = `${eventConfig.label}${countSuffixFor(section, stagePoints, periods)}`;
     topRow.appendChild(badge);
   }
 
@@ -537,7 +603,16 @@ function renderCard(product) {
     priceRow.appendChild(off);
   }
 
-  if (previous && previous.price !== latest.price) {
+  if (section === "price_up" && stagePoints.length > 1) {
+    // 値上げは翌日以降もこのセクションに残るので、前日比ではなく値上げ前の
+    // 価格との差と、値上げした日を出す。前日比だと2日目から消えてしまう。
+    const before = stagePoints[stagePoints.length - 2];
+    const after = stagePoints[stagePoints.length - 1];
+    const delta = document.createElement("span");
+    delta.className = "delta up";
+    delta.textContent = `+${fmt.format(after.price - before.price)}(${stageDateFormatter.format(new Date(after.scraped_at))})`;
+    priceRow.appendChild(delta);
+  } else if (previous && previous.price !== latest.price) {
     const diff = latest.price - previous.price;
     const delta = document.createElement("span");
     delta.className = `delta ${diff < 0 ? "down" : "up"}`;
@@ -631,10 +706,10 @@ function renderCard(product) {
   const scrapedAt = new Date(latest.scraped_at);
   const updatedFull = document.createElement("span");
   updatedFull.className = "updated-full";
-  updatedFull.textContent = `最終確認: ${dateFormatter.format(scrapedAt)}`;
+  updatedFull.textContent = `最終巡回: ${dateFormatter.format(scrapedAt)}`;
   const updatedShort = document.createElement("span");
   updatedShort.className = "updated-short";
-  updatedShort.textContent = `確認 ${stageDateFormatter.format(scrapedAt)}`;
+  updatedShort.textContent = `巡回 ${stageDateFormatter.format(scrapedAt)}`;
   updated.appendChild(updatedFull);
   updated.appendChild(updatedShort);
   card.appendChild(updated);
@@ -642,7 +717,7 @@ function renderCard(product) {
   // 価格の推移は折れ線ではなく文字で出す。期間限定は終わると価格が戻るため、
   // 折れ線にすると戻りの上昇が値上げのように見えてしまうし、値下げ側も
   // 目盛りの無い線より実際の金額と日付が並んでいる方が読める。
-  if (isMarkdownFamily && stagePoints.length > 0) {
+  if (isMarkdownTrack && stagePoints.length > 0) {
     // 値下げは段階そのものが読みたい情報なので、1行のテキストではなく段階ごとの
     // 塊にする。「1段階目 ¥3,490 8/4 → 2段階目 ¥2,990 8/11(7日後)」のように、
     // 何段階目・いくら・いつ・前回からどれだけ空いたかが1枚で追える。
@@ -657,10 +732,12 @@ function renderCard(product) {
         timeline.appendChild(arrow);
       }
       const el = document.createElement("span");
-      el.className = `stage-step${step.current ? " current" : ""}`;
+      el.className = `stage-step${step.current ? " current" : ""}${step.up ? " up" : ""}`;
       const stage = document.createElement("span");
       stage.className = "stage-no";
-      stage.textContent = `${step.stage}段階目`;
+      // 値上げは段階に数えない。値下げ→値上げ→値下げの順なら「1段階目→値上げ→
+      // 2段階目」と読める。
+      stage.textContent = step.up ? "値上げ" : `${step.stage}段階目`;
       el.appendChild(stage);
       const price = document.createElement("span");
       price.className = "stage-price";
@@ -725,8 +802,8 @@ function appendDateFilter(container, entries, { selected, onSelect }) {
 // 商品1件の「段階」。値下げは何段階目、期間限定は何回目。カードのバッジと
 // 同じ数え方(countSuffixFor と同じ材料)を、グループの見出しでも使う。
 function stageLabelOf(product) {
-  const type = product.latest.event_type;
-  if (MARKDOWN_EVENT_TYPES.has(type)) return `${markdownStagePoints(product.history).length}段階目`;
+  const type = product.section;
+  if (MARKDOWN_EVENT_TYPES.has(type)) return `${markdownStageCount(markdownStagePoints(product.history))}段階目`;
   if (LIMITED_EVENT_TYPES.has(type)) return `期間限定${limitedPeriods(product.history).length}回目`;
   return "値上げ";
 }
@@ -797,7 +874,10 @@ function buildUnbuyableGroup(products) {
 
 // open: 最初から開いた状態で描く(日付で絞り込んだ直後など、件数が少なく
 // 「開く」操作がただの手間になる場面用)。
-function appendProductGroup(section, labelText, products, { breakdown = false, open = false } = {}) {
+// sub: 見出しに添える内訳を呼び出し側で決める場合(日付別の値動き — 「その日の」
+// 段階は商品の現在の段階と一致しないため stageBreakdownOf は使えない)。
+// keepOrder: 渡した順のまま並べる。
+function appendProductGroup(section, labelText, products, { breakdown = false, open = false, sub = null, keepOrder = false } = {}) {
   // 買えるものだけを一覧の主役にする。終了した期間限定と在庫なしは、開かないと
   // 出てこない位置(グループ内の「終了・在庫なし」)へ落とす。見出しの件数も
   // 買えるものだけを数える — 「12件」を開いたら8件がもう買えなかった、が
@@ -817,11 +897,12 @@ function appendProductGroup(section, labelText, products, { breakdown = false, o
   label.textContent = labelText;
   // 日付でまとめたグループは、開かなくても「その日の何が何段階目か」が分かる
   // ようにする。段階ごとに分けてしまうと、1日ぶんが細かく割れて読みにくい。
-  if (breakdown && buyable.length > 0) {
-    const sub = document.createElement("span");
-    sub.className = "group-sub";
-    sub.textContent = stageBreakdownOf(buyable);
-    label.appendChild(sub);
+  const subText = sub ?? (breakdown && buyable.length > 0 ? stageBreakdownOf(buyable) : null);
+  if (subText) {
+    const subEl = document.createElement("span");
+    subEl.className = "group-sub";
+    subEl.textContent = subText;
+    label.appendChild(subEl);
   }
   summary.appendChild(label);
 
@@ -851,11 +932,13 @@ function appendProductGroup(section, labelText, products, { breakdown = false, o
       grid.className = "grid";
       // 未確認(直近の巡回で見つからなかった)は後ろへ。日付でまとめたグループは
       // そのうえで段階順に並べる — 見出しの内訳と同じ並びでカードが出る。
-      const ordered = [...buyable].sort(
-        (a, b) =>
-          (a.unconfirmed ? 1 : 0) - (b.unconfirmed ? 1 : 0) ||
-          (breakdown ? stageRankOf(stageLabelOf(a)) - stageRankOf(stageLabelOf(b)) : 0)
-      );
+      const ordered = keepOrder
+        ? buyable
+        : [...buyable].sort(
+            (a, b) =>
+              (a.unconfirmed ? 1 : 0) - (b.unconfirmed ? 1 : 0) ||
+              (breakdown ? stageRankOf(stageLabelOf(a)) - stageRankOf(stageLabelOf(b)) : 0)
+          );
       appendCards(grid, ordered);
       group.appendChild(grid);
     }
@@ -874,6 +957,7 @@ function appendProductGroup(section, labelText, products, { breakdown = false, o
   }
 
   section.appendChild(group);
+  return group;
 }
 
 const countFormatter = new Intl.NumberFormat("ja-JP");
@@ -1103,8 +1187,295 @@ function appendWeekdaySummary(container, products) {
   container.appendChild(section);
 }
 
+// --- 日付別の値動き ---------------------------------------------------------
+//
+// 下のセクションは商品を「いまの状態」で分けているため、ある日に値下げされた
+// 商品が 初値下げ/値下げ の2か所に割れ、同じ日に値上げされた商品はまた別の
+// 場所にある。「この日、何が値下げ(値上げ)になったか」に1か所で答えるため、
+// 各商品の履歴を「その日に起きたこと」に展開し直して日付で束ねる。
+
+const DAY_MOVE_KINDS = [
+  { key: "markdown", label: "値下げ", color: "var(--status-markdown)" },
+  { key: "limited", label: "期間限定", color: "var(--status-limited)" },
+  { key: "price_up", label: "値上げ・価格改定", color: "var(--status-price_up)" },
+];
+
+// 商品1件の値動きを [{ day, kind, label, rank }] にする。label は見出しの内訳に
+// 使う「その日の」段階(カードに出る現在の段階とは限らない)。
+function priceMovesOf(product) {
+  const { history } = product;
+  const moves = [];
+  const firstRow = history[0];
+
+  const points = markdownStagePoints(history);
+  points.forEach((point, i) => {
+    const day = jstDayOf(point.scraped_at);
+    if (!day) return;
+    if (i === 0) {
+      // 先頭の点は、このトラッカーが初めて値下げ一覧で見つけた日(first_markdown)
+      // のときだけ数える。読み込み範囲(直近35日)の端で切れた履歴の先頭まで
+      // 数えると、範囲の初日に全商品が「値下げ」として並んでしまう。
+      const row = history.find((r) => r.scraped_at === point.scraped_at);
+      // 初めて見つけた商品は値下げ前の価格が分からない(from なし)。
+      if (row?.event_type === "first_markdown") {
+        moves.push({ day, kind: "markdown", label: "初値下げ", rank: 0, from: null, to: point.price });
+      }
+      return;
+    }
+    const from = points[i - 1].price;
+    if (point.up) moves.push({ day, kind: "price_up", label: "値上げ", rank: 0, from, to: point.price });
+    else moves.push({ day, kind: "markdown", label: `${point.stage}段階目`, rank: point.stage, from, to: point.price });
+  });
+
+  limitedPeriods(history).forEach((period, i) => {
+    const day = jstDayOf(period.from);
+    if (!day) return;
+    // 同じ理由で、履歴の先頭から始まっている周期は初期間限定のときだけ数える。
+    if (period.from === firstRow?.scraped_at && firstRow.event_type !== "first_limited") return;
+    // 期間限定に入る直前の価格(通常の値下げ価格など)。無ければ from なし。
+    const before = [...history].reverse().find((r) => r.scraped_at < period.from);
+    moves.push({
+      day,
+      kind: "limited",
+      label: i === 0 ? "初期間限定" : `${i + 1}回目`,
+      rank: i + 1,
+      from: before && before.price !== period.price ? before.price : null,
+      to: period.price,
+    });
+  });
+
+  return moves;
+}
+
+// day -> kind -> [{ product, label, rank }]
+function priceMovesByDay(products) {
+  const byDay = new Map();
+  for (const product of products) {
+    for (const move of priceMovesOf(product)) {
+      if (!byDay.has(move.day)) byDay.set(move.day, new Map());
+      const kinds = byDay.get(move.day);
+      if (!kinds.has(move.kind)) kinds.set(move.kind, []);
+      kinds.get(move.kind).push({ product, label: move.label, rank: move.rank, from: move.from, to: move.to });
+    }
+  }
+  return byDay;
+}
+
+function breakdownOfMoves(entries) {
+  const counts = new Map();
+  for (const { label, rank } of entries) {
+    const current = counts.get(label) ?? { n: 0, rank };
+    current.n += 1;
+    counts.set(label, current);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => a[1].rank - b[1].rank)
+    .map(([label, { n }]) => `${label}${n}`)
+    .join("・");
+}
+
+// 日付別の値動きの1行。「何が・いくらからいくらになったか」が1行で読める
+// ことを優先して、カードではなく行にする(1日で数十件になる)。
+function renderMoveRow(entry) {
+  const { product, label, from, to } = entry;
+  const { latest } = product;
+  const fmt = currencyFormatter(latest.currency);
+
+  const row = document.createElement("a");
+  row.className = `move-row${product.hidden ? " unbuyable" : ""}`;
+  row.href = latest.url;
+  row.target = "_blank";
+  row.rel = "noopener noreferrer";
+
+  const name = document.createElement("span");
+  name.className = "move-name";
+  name.textContent = latest.product_name || latest.product_id;
+  row.appendChild(name);
+
+  const price = document.createElement("span");
+  price.className = "move-price";
+  price.textContent = from != null ? `${fmt.format(from)} → ${fmt.format(to)}` : fmt.format(to);
+  row.appendChild(price);
+
+  const pct = document.createElement("span");
+  if (from != null && from !== to) {
+    const change = Math.round(((to - from) / from) * 100);
+    pct.className = `move-pct ${change < 0 ? "down" : "up"}`;
+    pct.textContent = `${change > 0 ? "+" : "−"}${Math.abs(change)}%`;
+  } else {
+    pct.className = "move-pct none";
+    pct.textContent = from == null ? "初確認" : "";
+  }
+  row.appendChild(pct);
+
+  const tag = document.createElement("span");
+  tag.className = "move-tag";
+  tag.textContent = label;
+  row.appendChild(tag);
+
+  const meta = document.createElement("span");
+  meta.className = "move-meta";
+  const bits = [product.category];
+  if (product.soldOut) bits.push("在庫なし");
+  else if (product.offerOver) bits.push("終了");
+  else if (latest.in_stock_size_count > 0) bits.push(`在庫${latest.in_stock_size_count}サイズ`);
+  meta.textContent = bits.join("・");
+  row.appendChild(meta);
+
+  return row;
+}
+
+// 割引率の大きい順(値上げは上げ幅の大きい順)。同じ段階どうしで並べる。
+const moveChangeRatio = (e) => (e.from != null && e.from !== 0 ? (e.to - e.from) / e.from : 0);
+
+function appendMoveGroup(body, kind, entries) {
+  // 値動きは「在庫が残っているか」と関係なく起きたことなので、全件を数える。
+  // 在庫なし・終了は行を薄くして区別する(値上げされた旧モデルは、値上げ後の
+  // 価格帯ではすでに完売していることが多く、隠すと値上げ自体が見えなくなる)。
+  const sorted = [...entries].sort(
+    (a, b) =>
+      (a.product.hidden ? 1 : 0) - (b.product.hidden ? 1 : 0) ||
+      (kind.key === "price_up"
+        ? moveChangeRatio(b) - moveChangeRatio(a)
+        : a.rank - b.rank || moveChangeRatio(a) - moveChangeRatio(b))
+  );
+  const unbuyable = entries.filter((e) => e.product.hidden).length;
+
+  const group = document.createElement("details");
+  group.className = "category-group move-group";
+  group.style.setProperty("--status-color", kind.color);
+  group.open = entries.length <= MOVE_AUTO_OPEN_MAX;
+
+  const summary = document.createElement("summary");
+  const labelEl = document.createElement("span");
+  labelEl.className = "group-label";
+  labelEl.textContent = kind.label;
+  const sub = breakdownOfMoves(entries);
+  if (sub) {
+    const subEl = document.createElement("span");
+    subEl.className = "group-sub";
+    subEl.textContent = sub;
+    labelEl.appendChild(subEl);
+  }
+  summary.appendChild(labelEl);
+  const countEl = document.createElement("span");
+  countEl.className = "group-count";
+  countEl.textContent = `${entries.length}件`;
+  summary.appendChild(countEl);
+  if (unbuyable > 0) {
+    const over = document.createElement("span");
+    over.className = "group-over";
+    over.textContent = `うち在庫なし・終了 ${unbuyable}`;
+    summary.appendChild(over);
+  }
+  group.appendChild(summary);
+
+  let rendered = false;
+  const renderBody = () => {
+    if (rendered) return;
+    rendered = true;
+    const list = document.createElement("div");
+    list.className = "move-list";
+    for (const entry of sorted) list.appendChild(renderMoveRow(entry));
+    group.appendChild(list);
+  };
+  group.addEventListener("toggle", () => {
+    if (group.open) renderBody();
+  });
+  if (group.open) renderBody();
+
+  body.appendChild(group);
+}
+
+// 1グループをそのまま開いて出す件数の上限。行は軽いのでカードより多く開く。
+const MOVE_AUTO_OPEN_MAX = 80;
+
+let selectedMoveDay = null; // null = 直近の日。ブランド・性別を切り替えても保つ
+
+function appendDailyMoves(container, products) {
+  const byDay = priceMovesByDay(products);
+  const days = [...byDay.keys()].sort().reverse().slice(0, 14);
+  if (days.length === 0) return;
+
+  const section = document.createElement("section");
+  section.className = "section daily-moves";
+  section.style.setProperty("--status-color", "var(--status-markdown)");
+
+  const header = document.createElement("div");
+  header.className = "section-header";
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = "日付別の値動き";
+  const count = document.createElement("span");
+  count.className = "count";
+  header.appendChild(label);
+  header.appendChild(count);
+  section.appendChild(header);
+
+  const chipsHost = document.createElement("div");
+  const body = document.createElement("div");
+
+  const render = () => {
+    // 選んでいた日が、切り替えた先のブランド・性別に無ければ直近の日に戻す。
+    const day = selectedMoveDay && byDay.has(selectedMoveDay) ? selectedMoveDay : days[0];
+    const kinds = byDay.get(day);
+
+    chipsHost.innerHTML = "";
+    const bar = document.createElement("div");
+    bar.className = "date-summary";
+    for (const d of days) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "date-chip";
+      btn.dataset.date = d;
+      const total = [...byDay.get(d).values()].reduce((sum, list) => sum + list.length, 0);
+      btn.textContent = `${formatJstDayLabel(d)}(${WEEKDAY_LABELS[weekdayIndexOf(d)]})${total}`;
+      const active = d === day;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-pressed", String(active));
+      bar.appendChild(btn);
+    }
+    bar.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-date]");
+      if (!btn) return;
+      selectedMoveDay = btn.dataset.date;
+      render();
+    });
+    chipsHost.appendChild(bar);
+
+    count.textContent =
+      `${formatJstDayLabel(day)}: ` +
+      DAY_MOVE_KINDS.filter((k) => kinds.has(k.key))
+        .map((k) => `${k.label}${kinds.get(k.key).length}件`)
+        .join("・");
+
+    body.innerHTML = "";
+    for (const kind of DAY_MOVE_KINDS) {
+      const entries = kinds.get(kind.key);
+      if (!entries) continue;
+      appendMoveGroup(body, kind, entries);
+    }
+  };
+
+  render();
+  section.appendChild(chipsHost);
+  section.appendChild(body);
+
+  const note = document.createElement("p");
+  note.className = "weekday-note";
+  note.textContent =
+    "日付は、その日の朝の巡回で価格が変わっていると確認できた日です(値札は当日の午前2時ごろに切り替わり、" +
+    "朝6〜8時ごろの巡回で拾います)。「→」の左が前日までの価格、右が変更後の価格です。" +
+    "見出しの内訳(「初値下げ3・2段階目5」)はその日に何段階目になったかで、初めて見つけた商品は前の価格が分からないため「初確認」と出します。";
+  section.appendChild(note);
+
+  container.appendChild(section);
+}
+
 function renderContent() {
   contentEl.innerHTML = "";
+  // ブランドごとに巡回の進み具合が違う(UNIQLOが終わってGUがまだ、がありうる)。
+  statusEl.textContent = freshnessText(allRows, state.brand);
   contentEl.style.setProperty("--brand-color", BRAND_CONFIG[state.brand].color);
 
   const bucket = index?.[state.brand]?.[state.gender];
@@ -1118,11 +1489,14 @@ function renderContent() {
     return;
   }
 
+  const everyProduct = EVENT_TYPE_CONFIG.flatMap((e) => Object.values(bucket[e.key] || {}).flat());
+
+  // いちばん上は「この日に何が値下げ(値上げ)になったか」。このダッシュボードを
+  // 開く一番の理由なので、セクションをまたいで1か所で答える。
+  appendDailyMoves(contentEl, everyProduct);
+
   // 個別の商品より先に、その日どこを見るべきかの当たりが付く数字を出す。
-  appendWeekdaySummary(
-    contentEl,
-    EVENT_TYPE_CONFIG.flatMap((e) => Object.values(bucket[e.key] || {}).flat())
-  );
+  appendWeekdaySummary(contentEl, everyProduct);
 
   for (const eventConfig of EVENT_TYPE_CONFIG) {
     const byCategory = bucket[eventConfig.key];
@@ -1144,12 +1518,19 @@ function renderContent() {
     header.className = "section-header";
     const label = document.createElement("span");
     label.className = "label";
-    label.textContent = eventConfig.label;
+    label.textContent = eventConfig.sectionLabel ?? eventConfig.label;
     const count = document.createElement("span");
     count.className = "count";
     header.appendChild(label);
     header.appendChild(count);
     section.appendChild(header);
+
+    if (eventConfig.note) {
+      const note = document.createElement("p");
+      note.className = "section-note";
+      note.textContent = eventConfig.note;
+      section.appendChild(note);
+    }
 
     const dateOf = DATE_AXIS[eventConfig.key] ?? null;
 
@@ -1170,7 +1551,7 @@ function renderContent() {
       // 絞り込み中はその日の件数を出す。見出しの数字と目の前の一覧がずれると、
       // どちらが本当なのか確かめようがない。
       count.textContent =
-        (selectedDate === null ? "" : `${formatJstDayLabel(selectedDate)}に確認 `) +
+        (selectedDate === null ? "" : `${formatJstDayLabel(selectedDate)}${DATE_VERB[eventConfig.key] ?? "に確認"} `) +
         `${shownBuyable.length}件` +
         (shownUnbuyable > 0 ? `(ほかに終了・在庫なし ${shownUnbuyable}件)` : "");
 
@@ -1185,7 +1566,7 @@ function renderContent() {
         // 商品は何段階目だったか」の答えになる。
         const byStage = new Map();
         for (const product of shown) {
-          const stage = markdownStagePoints(product.history).length;
+          const stage = markdownStageCount(markdownStagePoints(product.history));
           if (!byStage.has(stage)) byStage.set(stage, []);
           byStage.get(stage).push(product);
         }
@@ -1319,6 +1700,34 @@ async function fetchPriceEvents() {
   return { rows, error: null };
 }
 
+const crawlTimeFormatter = new Intl.DateTimeFormat("ja-JP", {
+  month: "numeric",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "Asia/Tokyo",
+});
+
+// データがいつの巡回までなのか。巡回は毎朝3:00(日本時間)に予約しているが、
+// GitHub 側のキュー待ちで実際に走るのは6〜7時ごろになる日が多い。その間に
+// 開くと「今日の値下げが出ていない」ように見えるので、まだだとはっきり書く。
+function freshnessText(rows, brand) {
+  let newest = null;
+  for (const row of rows) {
+    if (row.brand !== brand) continue;
+    if (newest === null || row.scraped_at > newest) newest = row.scraped_at;
+  }
+  const name = BRAND_CONFIG[brand].label;
+  if (newest === null) return `${name}: まだデータがありません`;
+  const text = `${name}の最終巡回: ${crawlTimeFormatter.format(new Date(newest))}(日本時間)`;
+  const today = jstDayOf(new Date());
+  if (jstDayOf(newest) >= today) return text;
+  return (
+    `${text} — 今日(${formatJstDayLabel(today)})の${name}の巡回はまだ反映されていません。` +
+    "巡回は毎朝3:00に予約していますが、実際に走るのは6〜8時ごろになる日があり、UNIQLOのあとにGUの順で進みます。"
+  );
+}
+
 async function main() {
   const { rows: data, error } = await fetchPriceEvents();
 
@@ -1334,7 +1743,7 @@ async function main() {
     return;
   }
 
-  statusEl.textContent = "";
+  allRows = data;
   index = buildIndex(data);
   updateTabs();
   renderContent();
