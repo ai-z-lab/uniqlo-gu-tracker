@@ -346,6 +346,25 @@
       color: var(--text-muted);
     }
 
+    /* 日付別の値動き。種類(値下げ/期間限定/値上げ)ごとのグループ見出しを、
+       下のセクションと同じ色で塗り分ける。 */
+    .daily-moves .category-group > summary .group-label {
+      color: var(--status-color);
+    }
+
+    .section-note {
+      margin: -0.4rem 0 0.8rem;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      line-height: 1.6;
+    }
+
+    /* 値下げの流れの中の値上げ。段階とは別物なので色を変える。 */
+    .stage-step.up .stage-no,
+    .stage-step.current.up .stage-no {
+      color: var(--status-price_up);
+    }
+
     .weekday-note {
       margin: 0.7rem 0 0;
       color: var(--text-muted);
