@@ -54,6 +54,16 @@ const DATE_AXIS = {
   price_up: lastMarkdownTrackChange,
 };
 
+// 日付チップで絞り込んだときの見出しの言い方。「に確認」だけだと、巡回で
+// 確認した日なのか値札が変わった日なのか分からない、という指摘があったため。
+const DATE_VERB = {
+  markdown: "に値下げ",
+  first_markdown: "に初めて値下げ一覧で確認",
+  limited: "から期間限定",
+  first_limited: "に初めて期間限定で確認",
+  price_up: "に値上げ",
+};
+
 // 開いた直後に直近の日付で絞り込むセクション。「その日に新しく起きたこと」を
 // 並べるセクションはこちら、継続中のものを一覧するセクションは「すべて」から。
 const DEFAULT_TO_LATEST_DATE = new Set(["markdown", "first_markdown", "first_limited", "price_up"]);
@@ -71,6 +81,7 @@ const CATEGORY_ORDER = {
 const ALL_WEEKDAYS = "all";
 
 let state = { brand: "uniqlo", gender: "men", weekday: ALL_WEEKDAYS };
+let allRows = [];
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
 
 const currencyFormatter = (currency) =>
@@ -695,10 +706,10 @@ function renderCard(product) {
   const scrapedAt = new Date(latest.scraped_at);
   const updatedFull = document.createElement("span");
   updatedFull.className = "updated-full";
-  updatedFull.textContent = `最終確認: ${dateFormatter.format(scrapedAt)}`;
+  updatedFull.textContent = `最終巡回: ${dateFormatter.format(scrapedAt)}`;
   const updatedShort = document.createElement("span");
   updatedShort.className = "updated-short";
-  updatedShort.textContent = `確認 ${stageDateFormatter.format(scrapedAt)}`;
+  updatedShort.textContent = `巡回 ${stageDateFormatter.format(scrapedAt)}`;
   updated.appendChild(updatedFull);
   updated.appendChild(updatedShort);
   card.appendChild(updated);
@@ -1196,7 +1207,8 @@ function priceMovesOf(product) {
   const moves = [];
   const firstRow = history[0];
 
-  markdownStagePoints(history).forEach((point, i) => {
+  const points = markdownStagePoints(history);
+  points.forEach((point, i) => {
     const day = jstDayOf(point.scraped_at);
     if (!day) return;
     if (i === 0) {
@@ -1204,11 +1216,15 @@ function priceMovesOf(product) {
       // のときだけ数える。読み込み範囲(直近35日)の端で切れた履歴の先頭まで
       // 数えると、範囲の初日に全商品が「値下げ」として並んでしまう。
       const row = history.find((r) => r.scraped_at === point.scraped_at);
-      if (row?.event_type === "first_markdown") moves.push({ day, kind: "markdown", label: "初値下げ", rank: 0 });
+      // 初めて見つけた商品は値下げ前の価格が分からない(from なし)。
+      if (row?.event_type === "first_markdown") {
+        moves.push({ day, kind: "markdown", label: "初値下げ", rank: 0, from: null, to: point.price });
+      }
       return;
     }
-    if (point.up) moves.push({ day, kind: "price_up", label: "値上げ", rank: 0 });
-    else moves.push({ day, kind: "markdown", label: `${point.stage}段階目`, rank: point.stage });
+    const from = points[i - 1].price;
+    if (point.up) moves.push({ day, kind: "price_up", label: "値上げ", rank: 0, from, to: point.price });
+    else moves.push({ day, kind: "markdown", label: `${point.stage}段階目`, rank: point.stage, from, to: point.price });
   });
 
   limitedPeriods(history).forEach((period, i) => {
@@ -1216,7 +1232,16 @@ function priceMovesOf(product) {
     if (!day) return;
     // 同じ理由で、履歴の先頭から始まっている周期は初期間限定のときだけ数える。
     if (period.from === firstRow?.scraped_at && firstRow.event_type !== "first_limited") return;
-    moves.push({ day, kind: "limited", label: i === 0 ? "初期間限定" : `${i + 1}回目`, rank: i + 1 });
+    // 期間限定に入る直前の価格(通常の値下げ価格など)。無ければ from なし。
+    const before = [...history].reverse().find((r) => r.scraped_at < period.from);
+    moves.push({
+      day,
+      kind: "limited",
+      label: i === 0 ? "初期間限定" : `${i + 1}回目`,
+      rank: i + 1,
+      from: before && before.price !== period.price ? before.price : null,
+      to: period.price,
+    });
   });
 
   return moves;
@@ -1230,7 +1255,7 @@ function priceMovesByDay(products) {
       if (!byDay.has(move.day)) byDay.set(move.day, new Map());
       const kinds = byDay.get(move.day);
       if (!kinds.has(move.kind)) kinds.set(move.kind, []);
-      kinds.get(move.kind).push({ product, label: move.label, rank: move.rank });
+      kinds.get(move.kind).push({ product, label: move.label, rank: move.rank, from: move.from, to: move.to });
     }
   }
   return byDay;
@@ -1248,6 +1273,122 @@ function breakdownOfMoves(entries) {
     .map(([label, { n }]) => `${label}${n}`)
     .join("・");
 }
+
+// 日付別の値動きの1行。「何が・いくらからいくらになったか」が1行で読める
+// ことを優先して、カードではなく行にする(1日で数十件になる)。
+function renderMoveRow(entry) {
+  const { product, label, from, to } = entry;
+  const { latest } = product;
+  const fmt = currencyFormatter(latest.currency);
+
+  const row = document.createElement("a");
+  row.className = `move-row${product.hidden ? " unbuyable" : ""}`;
+  row.href = latest.url;
+  row.target = "_blank";
+  row.rel = "noopener noreferrer";
+
+  const name = document.createElement("span");
+  name.className = "move-name";
+  name.textContent = latest.product_name || latest.product_id;
+  row.appendChild(name);
+
+  const price = document.createElement("span");
+  price.className = "move-price";
+  price.textContent = from != null ? `${fmt.format(from)} → ${fmt.format(to)}` : fmt.format(to);
+  row.appendChild(price);
+
+  const pct = document.createElement("span");
+  if (from != null && from !== to) {
+    const change = Math.round(((to - from) / from) * 100);
+    pct.className = `move-pct ${change < 0 ? "down" : "up"}`;
+    pct.textContent = `${change > 0 ? "+" : "−"}${Math.abs(change)}%`;
+  } else {
+    pct.className = "move-pct none";
+    pct.textContent = from == null ? "初確認" : "";
+  }
+  row.appendChild(pct);
+
+  const tag = document.createElement("span");
+  tag.className = "move-tag";
+  tag.textContent = label;
+  row.appendChild(tag);
+
+  const meta = document.createElement("span");
+  meta.className = "move-meta";
+  const bits = [product.category];
+  if (product.soldOut) bits.push("在庫なし");
+  else if (product.offerOver) bits.push("終了");
+  else if (latest.in_stock_size_count > 0) bits.push(`在庫${latest.in_stock_size_count}サイズ`);
+  meta.textContent = bits.join("・");
+  row.appendChild(meta);
+
+  return row;
+}
+
+// 割引率の大きい順(値上げは上げ幅の大きい順)。同じ段階どうしで並べる。
+const moveChangeRatio = (e) => (e.from != null && e.from !== 0 ? (e.to - e.from) / e.from : 0);
+
+function appendMoveGroup(body, kind, entries) {
+  // 値動きは「在庫が残っているか」と関係なく起きたことなので、全件を数える。
+  // 在庫なし・終了は行を薄くして区別する(値上げされた旧モデルは、値上げ後の
+  // 価格帯ではすでに完売していることが多く、隠すと値上げ自体が見えなくなる)。
+  const sorted = [...entries].sort(
+    (a, b) =>
+      (a.product.hidden ? 1 : 0) - (b.product.hidden ? 1 : 0) ||
+      (kind.key === "price_up"
+        ? moveChangeRatio(b) - moveChangeRatio(a)
+        : a.rank - b.rank || moveChangeRatio(a) - moveChangeRatio(b))
+  );
+  const unbuyable = entries.filter((e) => e.product.hidden).length;
+
+  const group = document.createElement("details");
+  group.className = "category-group move-group";
+  group.style.setProperty("--status-color", kind.color);
+  group.open = entries.length <= MOVE_AUTO_OPEN_MAX;
+
+  const summary = document.createElement("summary");
+  const labelEl = document.createElement("span");
+  labelEl.className = "group-label";
+  labelEl.textContent = kind.label;
+  const sub = breakdownOfMoves(entries);
+  if (sub) {
+    const subEl = document.createElement("span");
+    subEl.className = "group-sub";
+    subEl.textContent = sub;
+    labelEl.appendChild(subEl);
+  }
+  summary.appendChild(labelEl);
+  const countEl = document.createElement("span");
+  countEl.className = "group-count";
+  countEl.textContent = `${entries.length}件`;
+  summary.appendChild(countEl);
+  if (unbuyable > 0) {
+    const over = document.createElement("span");
+    over.className = "group-over";
+    over.textContent = `うち在庫なし・終了 ${unbuyable}`;
+    summary.appendChild(over);
+  }
+  group.appendChild(summary);
+
+  let rendered = false;
+  const renderBody = () => {
+    if (rendered) return;
+    rendered = true;
+    const list = document.createElement("div");
+    list.className = "move-list";
+    for (const entry of sorted) list.appendChild(renderMoveRow(entry));
+    group.appendChild(list);
+  };
+  group.addEventListener("toggle", () => {
+    if (group.open) renderBody();
+  });
+  if (group.open) renderBody();
+
+  body.appendChild(group);
+}
+
+// 1グループをそのまま開いて出す件数の上限。行は軽いのでカードより多く開く。
+const MOVE_AUTO_OPEN_MAX = 80;
 
 let selectedMoveDay = null; // null = 直近の日。ブランド・性別を切り替えても保つ
 
@@ -1302,25 +1443,17 @@ function appendDailyMoves(container, products) {
     });
     chipsHost.appendChild(bar);
 
-    // 件数と内訳は、下のセクションと同じく「いま買えるもの」だけを数える。
-    const buyableOf = (key) => (kinds.get(key) ?? []).filter((e) => !e.product.hidden);
     count.textContent =
       `${formatJstDayLabel(day)}: ` +
       DAY_MOVE_KINDS.filter((k) => kinds.has(k.key))
-        .map((k) => `${k.label}${buyableOf(k.key).length}件`)
+        .map((k) => `${k.label}${kinds.get(k.key).length}件`)
         .join("・");
 
     body.innerHTML = "";
     for (const kind of DAY_MOVE_KINDS) {
       const entries = kinds.get(kind.key);
       if (!entries) continue;
-      const ordered = [...entries].sort((a, b) => a.rank - b.rank);
-      const group = appendProductGroup(body, kind.label, ordered.map((e) => e.product), {
-        sub: breakdownOfMoves(buyableOf(kind.key)),
-        open: buyableOf(kind.key).length <= AUTO_OPEN_MAX,
-        keepOrder: true,
-      });
-      group.style.setProperty("--status-color", kind.color);
+      appendMoveGroup(body, kind, entries);
     }
   };
 
@@ -1331,8 +1464,9 @@ function appendDailyMoves(container, products) {
   const note = document.createElement("p");
   note.className = "weekday-note";
   note.textContent =
-    "その日の巡回で価格が動いた商品です。見出しの内訳(「初値下げ3・2段階目5」)はその日に何段階目になったか、" +
-    "カードは商品のいまの状態です。巡回は日本時間の早朝なので、その日の分は巡回が終わるまで出てきません。";
+    "日付は、その日の朝の巡回で価格が変わっていると確認できた日です(値札は当日の午前2時ごろに切り替わり、" +
+    "朝6〜8時ごろの巡回で拾います)。「→」の左が前日までの価格、右が変更後の価格です。" +
+    "見出しの内訳(「初値下げ3・2段階目5」)はその日に何段階目になったかで、初めて見つけた商品は前の価格が分からないため「初確認」と出します。";
   section.appendChild(note);
 
   container.appendChild(section);
@@ -1340,6 +1474,8 @@ function appendDailyMoves(container, products) {
 
 function renderContent() {
   contentEl.innerHTML = "";
+  // ブランドごとに巡回の進み具合が違う(UNIQLOが終わってGUがまだ、がありうる)。
+  statusEl.textContent = freshnessText(allRows, state.brand);
   contentEl.style.setProperty("--brand-color", BRAND_CONFIG[state.brand].color);
 
   const bucket = index?.[state.brand]?.[state.gender];
@@ -1415,7 +1551,7 @@ function renderContent() {
       // 絞り込み中はその日の件数を出す。見出しの数字と目の前の一覧がずれると、
       // どちらが本当なのか確かめようがない。
       count.textContent =
-        (selectedDate === null ? "" : `${formatJstDayLabel(selectedDate)}に確認 `) +
+        (selectedDate === null ? "" : `${formatJstDayLabel(selectedDate)}${DATE_VERB[eventConfig.key] ?? "に確認"} `) +
         `${shownBuyable.length}件` +
         (shownUnbuyable > 0 ? `(ほかに終了・在庫なし ${shownUnbuyable}件)` : "");
 
@@ -1575,18 +1711,20 @@ const crawlTimeFormatter = new Intl.DateTimeFormat("ja-JP", {
 // データがいつの巡回までなのか。巡回は毎朝3:00(日本時間)に予約しているが、
 // GitHub 側のキュー待ちで実際に走るのは6〜7時ごろになる日が多い。その間に
 // 開くと「今日の値下げが出ていない」ように見えるので、まだだとはっきり書く。
-function freshnessText(rows) {
+function freshnessText(rows, brand) {
   let newest = null;
   for (const row of rows) {
+    if (row.brand !== brand) continue;
     if (newest === null || row.scraped_at > newest) newest = row.scraped_at;
   }
-  if (newest === null) return "";
-  const text = `最終巡回: ${crawlTimeFormatter.format(new Date(newest))}(日本時間)`;
+  const name = BRAND_CONFIG[brand].label;
+  if (newest === null) return `${name}: まだデータがありません`;
+  const text = `${name}の最終巡回: ${crawlTimeFormatter.format(new Date(newest))}(日本時間)`;
   const today = jstDayOf(new Date());
   if (jstDayOf(newest) >= today) return text;
   return (
-    `${text} — 今日(${formatJstDayLabel(today)})の巡回はまだ反映されていません。` +
-    "巡回は毎朝3:00に予約していますが、実際に走るのは6〜7時ごろになる日があります。"
+    `${text} — 今日(${formatJstDayLabel(today)})の${name}の巡回はまだ反映されていません。` +
+    "巡回は毎朝3:00に予約していますが、実際に走るのは6〜8時ごろになる日があり、UNIQLOのあとにGUの順で進みます。"
   );
 }
 
@@ -1605,7 +1743,7 @@ async function main() {
     return;
   }
 
-  statusEl.textContent = freshnessText(data);
+  allRows = data;
   index = buildIndex(data);
   updateTabs();
   renderContent();
