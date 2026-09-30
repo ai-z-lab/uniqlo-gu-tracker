@@ -37,8 +37,9 @@ const EVENT_TYPE_CONFIG = [
 // - 値上げ: 価格が実際に動いた最後の日
 const DATE_AXIS = {
   markdown: (p) => {
+    // 値上げ後まだ下がっていない商品は、どの日にも「値下げ」されていない。
     const points = markdownStagePoints(p.history);
-    return points.length ? points[points.length - 1].scraped_at : null;
+    return markdownStageCount(points) > 0 ? points[points.length - 1].scraped_at : null;
   },
   first_markdown: (p) => p.history[0]?.scraped_at ?? null,
   first_limited: (p) => p.history[0]?.scraped_at ?? null,
@@ -145,7 +146,7 @@ function priceStagePoints(history, eventTypes) {
     if (eventTypes && !eventTypes.has(row.event_type)) continue;
     const last = points[points.length - 1];
     if (!last || last.price !== row.price) {
-      points.push({ price: row.price, currency: row.currency, scraped_at: row.scraped_at });
+      points.push({ price: row.price, currency: row.currency, scraped_at: row.scraped_at, event_type: row.event_type });
     }
   }
   return points;
@@ -153,8 +154,33 @@ function priceStagePoints(history, eventTypes) {
 
 // A distinct "値下げ段階" — "3段階目" means "the 3rd distinct price this
 // product has had while markdown-listed", not "3 rows in the DB".
+//
+// 値上げの行(price_up)も系列に含め、価格が上がった時点で段階を数え直す。
+// 以前は値上げの行を飛ばしていたため、¥1,990 → (9/29 値上げ ¥2,990) →
+// (9/30 同じ¥2,990が値下げ一覧で記録)が「9/30に2段階目へ値下げ」に見えていた。
+// 値上げで始まった系列は先頭に risen を立て、その点は段階に数えない
+// (markdownStageCount)。値上げ後にまだ下がっていない商品は0段階＝「値上げ後」。
+const MARKDOWN_SEQUENCE_TYPES = new Set([...MARKDOWN_EVENT_TYPES, "price_up"]);
+
 function markdownStagePoints(history) {
-  return priceStagePoints(history, MARKDOWN_EVENT_TYPES);
+  const points = priceStagePoints(history, MARKDOWN_SEQUENCE_TYPES);
+  let start = 0;
+  for (let i = 1; i < points.length; i++) {
+    if (points[i].price > points[i - 1].price) start = i;
+  }
+  const current = points.slice(start);
+  // 値下げ一覧で見つかる前に値上げの行しか無い商品(先頭が price_up)も、値上げ
+  // から始まった系列として扱う。
+  current.risen = start > 0 || current[0]?.event_type === "price_up";
+  return current;
+}
+
+function markdownStageCount(points) {
+  return points.length - (points.risen ? 1 : 0);
+}
+
+function markdownStageLabel(count) {
+  return count === 0 ? "値上げ後" : `${count}段階目`;
 }
 
 // 値下げも期間限定も日本時間で回っているので、日付も日本時間で出す。
@@ -202,10 +228,11 @@ function formatMarkdownStageHistory(points) {
 // 読めるようにするためのもので、段階でグループを開いて回る必要をなくす。
 function markdownStageSteps(points) {
   const fmt = currencyFormatter(points[0]?.currency ?? "JPY");
+  const offset = points.risen ? 0 : 1;
   return points.map((point, i) => {
     const gap = i === 0 ? null : daysBetween(points[i - 1].scraped_at, point.scraped_at);
     return {
-      stage: i + 1,
+      stage: i + offset,
       price: fmt.format(point.price),
       date: stageDateFormatter.format(new Date(point.scraped_at)),
       gapDays: gap,
@@ -501,7 +528,7 @@ function categoryOrderFor(brand, categories) {
 
 // 値下げは「何段階目」、期間限定は「何回目」。1回目は定義上必ず1なので出さない。
 function countSuffixFor(eventType, stagePoints, periods) {
-  if (eventType === "markdown" && stagePoints.length > 0) return `(${stagePoints.length}段階目)`;
+  if (eventType === "markdown" && stagePoints.length > 0) return `(${markdownStageLabel(markdownStageCount(stagePoints))})`;
   if (eventType === "limited" && periods.length > 1) return `(${periods.length}回目)`;
   return "";
 }
@@ -718,7 +745,7 @@ function renderCard(product) {
       el.className = `stage-step${step.current ? " current" : ""}`;
       const stage = document.createElement("span");
       stage.className = "stage-no";
-      stage.textContent = `${step.stage}段階目`;
+      stage.textContent = markdownStageLabel(step.stage);
       el.appendChild(stage);
       const price = document.createElement("span");
       price.className = "stage-price";
@@ -761,7 +788,7 @@ function stageCellTextFor(latest, stagePoints, periods) {
     case "first_limited":
       return "初期間限定";
     case "markdown":
-      return stagePoints.length > 0 ? `${stagePoints.length}段階目` : "値下げ";
+      return stagePoints.length > 0 ? markdownStageLabel(markdownStageCount(stagePoints)) : "値下げ";
     case "limited":
       return `${Math.max(periods.length, 1)}回目`;
     case "price_up":
@@ -972,7 +999,7 @@ function appendDateFilter(container, entries, { selected, onSelect }) {
 // 同じ数え方(countSuffixFor と同じ材料)を、グループの見出しでも使う。
 function stageLabelOf(product) {
   const type = product.latest.event_type;
-  if (MARKDOWN_EVENT_TYPES.has(type)) return `${markdownStagePoints(product.history).length}段階目`;
+  if (MARKDOWN_EVENT_TYPES.has(type)) return markdownStageLabel(markdownStageCount(markdownStagePoints(product.history)));
   if (LIMITED_EVENT_TYPES.has(type)) return `期間限定${limitedPeriods(product.history).length}回目`;
   return "値上げ";
 }
@@ -1450,13 +1477,14 @@ function renderContent() {
         // 商品は何段階目だったか」の答えになる。
         const byStage = new Map();
         for (const product of shown) {
-          const stage = markdownStagePoints(product.history).length;
+          const stage = markdownStageCount(markdownStagePoints(product.history));
           if (!byStage.has(stage)) byStage.set(stage, []);
           byStage.get(stage).push(product);
         }
-        for (const stage of [...byStage.keys()].sort((a, b) => a - b)) {
+        // 値上げ後(0段階)は値下げではないので、段階の後ろに回す。
+        for (const stage of [...byStage.keys()].sort((a, b) => (a || Infinity) - (b || Infinity))) {
           const group = byStage.get(stage);
-          appendProductGroup(groupsHost, `${stage}段階目`, group, {
+          appendProductGroup(groupsHost, markdownStageLabel(stage), group, {
             // その日に絞り込んでいて件数が少なければ、開く操作は手間でしかない。
             open: selectedDate !== null && group.filter((p) => !p.hidden).length <= AUTO_OPEN_MAX,
           });
