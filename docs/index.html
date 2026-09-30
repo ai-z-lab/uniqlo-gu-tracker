@@ -742,6 +742,192 @@
       font-size: 0.7rem;
     }
 
+    /* --- 表示の切り替え(表 / カード) ---
+       ブランド・性別と同じ「どれか1つを選ぶ」操作だが、見ている中身ではなく
+       並べ方の設定なので、小さく右に寄せて主役のタブと張り合わないようにする。 */
+    .view-switch {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 0.5rem;
+      margin: -0.3rem 0 1rem;
+    }
+
+    .view-switch-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text-muted);
+    }
+
+    .tabs.view-tabs {
+      margin: 0;
+      padding: 0.2rem;
+      border-radius: 9px;
+    }
+
+    .tabs.view-tabs button {
+      flex: 0 0 auto;
+      font-size: 0.75rem;
+      padding: 0.25rem 0.8rem;
+      border-radius: 7px;
+    }
+
+    .tabs.view-tabs button.active {
+      background: var(--text);
+      color: var(--surface);
+    }
+
+    /* --- 表 ---
+       1商品1行。金額・段階の列は右寄せ・等幅数字にして、縦に目で追ったときに
+       桁が揃うようにする。罫線は横だけにして、行を区切る以上の線を引かない。 */
+    .category-group > .table-wrap {
+      padding: 0.2rem 0.9rem 0.6rem;
+    }
+
+    .category-group > .hidden-group > .table-wrap {
+      padding: 0.2rem 0.7rem 0.5rem;
+    }
+
+    .product-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .product-table th {
+      text-align: left;
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      padding: 0.5rem 0.5rem 0.4rem;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    .product-table td {
+      padding: 0.6rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    .product-table tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    .product-table tbody tr:hover {
+      background: var(--tab-bg);
+    }
+
+    .product-table th.col-price,
+    .product-table td.col-price,
+    .product-table th.col-stage,
+    .product-table td.col-stage {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .product-table .col-name {
+      width: 42%;
+    }
+
+    .product-table .col-name a {
+      color: var(--text);
+      font-weight: 600;
+      text-decoration: none;
+      line-height: 1.4;
+    }
+
+    .product-table .col-name a:hover {
+      text-decoration: underline;
+    }
+
+    .row-notes {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem 0.5rem;
+      margin-top: 0.2rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .row-note.over { color: var(--text); font-weight: 800; }
+    .row-note.member { color: var(--status-limited); }
+    .row-note.remarkdown { color: var(--down); }
+    .row-note.end-date { color: var(--status-limited); }
+
+    .row-price {
+      font-size: 1.05rem;
+      font-weight: 800;
+    }
+
+    .row-was {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.35rem;
+      font-size: 0.72rem;
+    }
+
+    .row-stage {
+      font-weight: 700;
+    }
+
+    .row-interval {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    .col-history {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      line-height: 1.5;
+    }
+
+    .trail-step {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 0.2rem;
+      white-space: nowrap;
+    }
+
+    .trail-step.current {
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .trail-date {
+      font-size: 0.66rem;
+      opacity: 0.85;
+    }
+
+    .trail-arrow {
+      margin: 0 0.3rem;
+      font-size: 0.66rem;
+    }
+
+    /* 終了・未確認はカードと同じく、消さずに色を落とす。 */
+    .product-table tr.offer-over td,
+    .product-table tr.unconfirmed td {
+      opacity: 0.55;
+    }
+
+    .product-table tr.offer-over .row-price {
+      text-decoration: line-through;
+    }
+
+    /* 過去の週の期間限定を振り返っているときは、並ぶものがすべて終了済み。
+       全部を薄くすると読めないだけなので、色は戻して「終了」の注記だけ残す。 */
+    .past-period .product-table tr.offer-over td,
+    .past-period .card.offer-over {
+      opacity: 1;
+    }
+
+    .past-period .product-table tr.offer-over .row-price,
+    .past-period .card.offer-over .price {
+      text-decoration: none;
+    }
+
     .empty {
       text-align: center;
       padding: 2.5rem 1rem;
@@ -950,6 +1136,71 @@
       .category-group > .hidden-group > .grid {
         padding: 0.5rem;
       }
+
+      .view-switch {
+        margin: -0.2rem 0 0.7rem;
+      }
+
+      /* 狭い画面では4列の表は収まらないので、1行を2段のブロックに組み替える。
+           商品名          価格
+           推移            段階
+         見出し行は列が並ばなくなるので出さない。 */
+      .category-group > .table-wrap {
+        padding: 0 0.7rem 0.3rem;
+      }
+
+      .category-group > .hidden-group > .table-wrap {
+        padding: 0 0.6rem 0.3rem;
+      }
+
+      .product-table thead {
+        display: none;
+      }
+
+      .product-table,
+      .product-table tbody {
+        display: block;
+      }
+
+      .product-table tr {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+          "name price"
+          "history stage";
+        column-gap: 0.6rem;
+        row-gap: 0.25rem;
+        padding: 0.6rem 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .product-table tbody tr:last-child {
+        border-bottom: none;
+      }
+
+      .product-table td {
+        display: block;
+        padding: 0;
+        border-bottom: none;
+      }
+
+      .product-table .col-name { grid-area: name; width: auto; font-size: 0.8rem; }
+      .product-table .col-price { grid-area: price; }
+      .product-table .col-stage { grid-area: stage; font-size: 0.72rem; }
+      .product-table .col-history { grid-area: history; font-size: 0.68rem; }
+
+      .product-table td.col-history:empty,
+      .product-table td.col-stage:empty {
+        display: none;
+      }
+
+      .row-price {
+        font-size: 0.95rem;
+      }
+
+      .row-notes {
+        font-size: 0.64rem;
+      }
     }
 
     footer {
@@ -976,6 +1227,13 @@
     <div class="tabs gender-tabs" id="gender-tabs">
       <button type="button" data-gender="men">MEN</button>
       <button type="button" data-gender="women">WOMEN</button>
+    </div>
+    <div class="view-switch">
+      <span class="view-switch-label" id="view-label">表示</span>
+      <div class="tabs view-tabs" id="view-tabs" role="group" aria-labelledby="view-label">
+        <button type="button" data-view="table">表</button>
+        <button type="button" data-view="cards">カード</button>
+      </div>
     </div>
 
     <div id="status">読み込み中…</div>
