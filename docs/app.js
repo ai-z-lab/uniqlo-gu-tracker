@@ -4,6 +4,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "./config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 const statusEl = document.getElementById("status");
+const updatedEl = document.getElementById("updated");
 const contentEl = document.getElementById("content");
 const brandTabsEl = document.getElementById("brand-tabs");
 const genderTabsEl = document.getElementById("gender-tabs");
@@ -978,6 +979,13 @@ function appendDateFilter(container, entries, { selected, onSelect }) {
     // dataset は文字列しか持てないので、「すべて」は空文字で表す。
     btn.dataset.date = chip.key ?? "";
     btn.textContent = chip.count === null ? chip.label : `${chip.label}(${chip.count})`;
+    // 今日の日付には印を付ける。「今朝の値下げはどれか」を探す手間を省くため。
+    if (chip.key && chip.key === jstDayOf(new Date())) {
+      const mark = document.createElement("span");
+      mark.className = "today-mark";
+      mark.textContent = "今日";
+      btn.prepend(mark);
+    }
     const active = (chip.key ?? null) === selected;
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-pressed", String(active));
@@ -1638,6 +1646,35 @@ async function fetchPriceEvents() {
   return { rows, error: null };
 }
 
+// 画面上部の「最終更新」。今朝の巡回がもう入ったのか、まだ昨日のデータなのかを
+// 開いてすぐ分かるようにする(巡回はGitHub側の混雑で数時間遅れる日がある)。
+const updatedTimeFormatter = new Intl.DateTimeFormat("ja-JP", {
+  timeZone: "Asia/Tokyo",
+  month: "numeric",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+function renderUpdated(rows) {
+  const latest = rows.reduce((max, r) => (r.scraped_at > max ? r.scraped_at : max), "");
+  if (!latest) return;
+  const today = jstDayOf(new Date());
+  const latestDay = jstDayOf(latest);
+  const fresh = latestDay === today;
+
+  updatedEl.innerHTML = "";
+  const badge = document.createElement("span");
+  badge.className = `updated-badge ${fresh ? "fresh" : "stale"}`;
+  badge.textContent = fresh ? "今日の更新あり" : "今日はまだ未更新";
+  updatedEl.appendChild(badge);
+
+  const when = document.createElement("span");
+  when.textContent = `最終更新 ${updatedTimeFormatter.format(new Date(latest))}(${weekdayJaOf(latestDay)})`;
+  updatedEl.appendChild(when);
+  updatedEl.hidden = false;
+}
+
 async function main() {
   const { rows: data, error } = await fetchPriceEvents();
 
@@ -1654,6 +1691,7 @@ async function main() {
   }
 
   statusEl.textContent = "";
+  renderUpdated(data);
   index = buildIndex(data);
   updateTabs();
   renderContent();
