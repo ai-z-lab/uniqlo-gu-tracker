@@ -21,11 +21,13 @@ const BRAND_CONFIG = {
 // pages respectively — NOT a claim that the product just launched, since this
 // tracker never visits an official new-arrivals page. They're grouped next to
 // their parent 値下げ/期間限定 sections rather than at the top for that reason.
+// 並びは「いま安いもの」が先。開いてすぐ知りたいのは今週の期間限定と、
+// 値下げ中の商品。初値下げ・初期間限定は親セクションのすぐ後ろに置く。
 const EVENT_TYPE_CONFIG = [
-  { key: "first_markdown", label: "初値下げ" },
-  { key: "markdown", label: "値下げ" },
-  { key: "first_limited", label: "初期間限定" },
   { key: "limited", label: "期間限定" },
+  { key: "first_limited", label: "初期間限定" },
+  { key: "markdown", label: "値下げ" },
+  { key: "first_markdown", label: "初値下げ" },
   { key: "price_up", label: "値上げ" },
 ];
 
@@ -1453,6 +1455,76 @@ function appendWeekdaySummary(container, products) {
   container.appendChild(section);
 }
 
+// 「今日の変動」— 最新の巡回日に価格が動いた(値下げ・初値下げ)か、期間限定に
+// 入った商品だけを、カテゴリごとにまとめて出す。巡回がまだ今日分を取り込んで
+// いなければ、最新の巡回日の分を出し、そう分かる見出しにする。
+function changedOnDay(product, key, day) {
+  if (product.hidden) return false;
+  if (key === "limited" || key === "first_limited") {
+    const periods = limitedPeriods(product.history);
+    const current = periods[periods.length - 1];
+    return Boolean(current) && jstDayOf(current.from) === day;
+  }
+  if (key === "price_up") return false;
+  const at = DATE_AXIS[key]?.(product);
+  return Boolean(at) && jstDayOf(at) === day;
+}
+
+function appendTodaySection(container, bucket) {
+  const all = [];
+  for (const e of EVENT_TYPE_CONFIG) for (const list of Object.values(bucket[e.key] || {})) for (const p of list) all.push([e.key, p]);
+  let latestDay = null;
+  for (const [, p] of all) {
+    const d = jstDayOf(p.latest.scraped_at);
+    if (d && (latestDay === null || d > latestDay)) latestDay = d;
+  }
+  if (!latestDay) return;
+  const latestAt = all.reduce((m, [, p]) => (p.latest.scraped_at > m ? p.latest.scraped_at : m), "");
+  const latestTime = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit" }).format(new Date(latestAt));
+
+  const changed = all.filter(([key, p]) => changedOnDay(p, key, latestDay)).map(([, p]) => p);
+  const isToday = latestDay === jstDayOf(new Date());
+
+  const section = document.createElement("section");
+  section.className = "section today-section";
+  section.style.setProperty("--status-color", "var(--down)");
+  const header = document.createElement("div");
+  header.className = "section-header";
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = isToday ? "今日の変動" : `${formatJstDayLabel(latestDay)}の変動`;
+  const count = document.createElement("span");
+  count.className = "count";
+  // いつの巡回の結果なのかを見出しに出す。「今日の変動」が何時時点の話かが分からないと、
+  // まだ今朝の分が入っていないのか、本当に変動が無いのかを区別できない。
+  count.textContent = `${formatJstDayLabel(latestDay)}(${weekdayJaOf(latestDay)}) ${latestTime}更新・${changed.length}件`;
+  header.appendChild(label);
+  header.appendChild(count);
+  section.appendChild(header);
+
+  if (changed.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "この日に値下げ・期間限定入りした商品はありません。";
+    section.appendChild(empty);
+  } else {
+    const byCategory = new Map();
+    for (const p of changed) {
+      if (!byCategory.has(p.category)) byCategory.set(p.category, []);
+      byCategory.get(p.category).push(p);
+    }
+    for (const category of categoryOrderFor(state.brand, [...byCategory.keys()])) {
+      const group = byCategory.get(category);
+      appendProductGroup(section, category, group, {
+        breakdown: true,
+        sortByStage: false,
+        open: changed.length <= AUTO_OPEN_MAX,
+      });
+    }
+  }
+  container.appendChild(section);
+}
+
 function renderContent() {
   contentEl.innerHTML = "";
   contentEl.style.setProperty("--brand-color", BRAND_CONFIG[state.brand].color);
@@ -1468,11 +1540,11 @@ function renderContent() {
     return;
   }
 
-  // 個別の商品より先に、その日どこを見るべきかの当たりが付く数字を出す。
-  appendWeekdaySummary(
-    contentEl,
-    EVENT_TYPE_CONFIG.flatMap((e) => Object.values(bucket[e.key] || {}).flat())
-  );
+  const everyProduct = EVENT_TYPE_CONFIG.flatMap((e) => Object.values(bucket[e.key] || {}).flat());
+
+  // いちばん上は「今日動いたもの」。値下げ・初値下げ・期間限定入りを1か所に
+  // まとめ、開いた瞬間に今日の答えが出るようにする。
+  appendTodaySection(contentEl, bucket);
 
   for (const eventConfig of EVENT_TYPE_CONFIG) {
     const byCategory = bucket[eventConfig.key];
@@ -1652,6 +1724,9 @@ function renderContent() {
 
     contentEl.appendChild(section);
   }
+
+  // 曜日ごとの傾向は分析向けなので、商品一覧の後ろに置く。
+  appendWeekdaySummary(contentEl, everyProduct);
 }
 
 function setActiveTab(container, attr, value) {
