@@ -2340,6 +2340,39 @@ async function debugProducts(browser, raw) {
 // 通常の巡回ではブラウザを使わない。価格・在庫・期間限定の終了日はすべて
 // ブランドのAPIから素の fetch で取れる(2026-08-21に実測)。ブラウザが要るのは
 // 調査モードだけなので、そのときだけ起動する。
+// --- Debug mode: どの genderIds がキッズ・ベビー・グッズなのか ---
+//
+// 巡回はいまメンズ・レディースだけ。キッズ等を足すために区分IDを洗い出す。
+// 結果はログではなく ::notice:: 注記として出す(注記は Checks API から読めるため)。
+const GENDER_PROBE_TOKEN = 'gender-probe';
+
+async function probeGenderIds() {
+  const targets = [
+    { brand: 'uniqlo', origin: 'https://www.uniqlo.com', from: 1060, to: 1095 },
+    { brand: 'gu', origin: 'https://www.gu-global.com', from: 2240, to: 2275 },
+  ];
+  const hits = [];
+  for (const t of targets) {
+    for (let id = t.from; id <= t.to; id += 1) {
+      const counts = {};
+      let sample = null;
+      for (const flag of ['discount', 'limitedOffer']) {
+        const r = await postSearch(t.origin, { genderIds: [id], flagCodes: [flag], offset: 0, limit: 1 }, `${t.origin}/jp/ja/`);
+        counts[flag] = r.body?.result?.pagination?.total ?? 0;
+        const item = r.body?.result?.items?.[0];
+        if (item && !sample) sample = { genderName: item.genderName ?? null, name: item.name ?? null };
+        await sleep(REQUEST_DELAY_MS);
+      }
+      if (counts.discount > 0 || counts.limitedOffer > 0) {
+        hits.push(`${t.brand} ${id} ${sample?.genderName} 値下げ${counts.discount} 期間限定${counts.limitedOffer} 例:${sample?.name}`);
+      }
+    }
+  }
+  // 注記は1ステップあたり件数に上限があるので、まとめて数本に分ける。
+  for (let i = 0; i < hits.length; i += 6) console.log(`::notice title=gender-probe ${i / 6 + 1}::${hits.slice(i, i + 6).join(' | ')}`);
+  if (hits.length === 0) console.log('::notice title=gender-probe::no hits');
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2416,6 +2449,10 @@ async function main() {
     }
     if (token === DASHBOARD_PROBE_TOKEN) {
       await probeDashboardQuery();
+      return;
+    }
+    if (token === GENDER_PROBE_TOKEN) {
+      await probeGenderIds();
       return;
     }
     await withBrowser(async (browser) => {
