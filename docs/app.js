@@ -105,7 +105,24 @@ function saveView(view) {
   }
 }
 
-let state = { brand: "uniqlo", gender: "men", weekday: ALL_WEEKDAYS, view: loadView() };
+// 値下げのまとめ方。日付ごと(既定)かカテゴリごとか。表/カードと同じく前回の選択を覚える。
+const MARKDOWN_GROUP_STORAGE_KEY = "markdownGroup";
+function loadMarkdownGroup() {
+  try {
+    return localStorage.getItem(MARKDOWN_GROUP_STORAGE_KEY) === "category" ? "category" : "date";
+  } catch {
+    return "date";
+  }
+}
+function saveMarkdownGroup(mode) {
+  try {
+    localStorage.setItem(MARKDOWN_GROUP_STORAGE_KEY, mode);
+  } catch {
+    // 保存できない環境(プライベートブラウズ等)では、その場の切り替えだけ効けばよい。
+  }
+}
+
+let state = { brand: "uniqlo", gender: "men", weekday: ALL_WEEKDAYS, view: loadView(), markdownGroup: loadMarkdownGroup() };
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
 
 const currencyFormatter = (currency) =>
@@ -1087,7 +1104,7 @@ function appendProductGroup(
   section,
   labelText,
   products,
-  { breakdown = false, sortByStage = breakdown, open = false, includeHidden = false } = {}
+  { breakdown = false, sortByStage = breakdown, sortByDateOf = null, open = false, includeHidden = false } = {}
 ) {
   // 買えるものだけを一覧の主役にする。終了した期間限定と在庫なしは、開かないと
   // 出てこない位置(グループ内の「終了・在庫なし」)へ落とす。見出しの件数も
@@ -1146,6 +1163,7 @@ function appendProductGroup(
       const ordered = [...buyable].sort(
         (a, b) =>
           (a.unconfirmed ? 1 : 0) - (b.unconfirmed ? 1 : 0) ||
+          (sortByDateOf ? String(sortByDateOf(b) ?? "").localeCompare(String(sortByDateOf(a) ?? "")) : 0) ||
           (sortByStage
             ? stageRankOf(stageLabelOf(a)) - stageRankOf(stageLabelOf(b))
             : categoryRank(a.category) - categoryRank(b.category))
@@ -1484,7 +1502,7 @@ function renderContent() {
         `${shownBuyable.length}件` +
         (shownUnbuyable > 0 ? `(ほかに終了・在庫なし ${shownUnbuyable}件)` : "");
 
-      if (eventConfig.key === "markdown" && selectedDate === null) {
+      if (eventConfig.key === "markdown" && selectedDate === null && state.markdownGroup === "date") {
         // 値下げは「いつ下がったか」が主軸。段階でまとめると、ある日に何が
         // 下がったかを見るのに段階グループを全部開いて回ることになる。
         // 日付ごと(新しい順)にまとめ、段階は見出しの内訳とカードのバッジで読む。
@@ -1522,8 +1540,10 @@ function renderContent() {
             // 定義上いつも1回目なので、内訳を出しても情報が増えない。
             // 値下げで日付を選んだときは、カテゴリの見出しに「2段階目3・3段階目1」を
             // 添える — その日に下がった商品が何段階目かを開かずに読むため。
-            breakdown: selectedDate !== null && (eventConfig.key === "limited" || eventConfig.key === "markdown"),
+            breakdown: (selectedDate !== null && eventConfig.key === "limited") || eventConfig.key === "markdown",
             sortByStage: eventConfig.key !== "markdown",
+            // 値下げをカテゴリでまとめたときは、グループの中を新しく下がった順に並べる。
+            sortByDateOf: eventConfig.key === "markdown" ? dateOf : null,
             includeHidden: pastPeriod,
             open: selectedDate !== null && group.filter((p) => pastPeriod || !p.hidden).length <= AUTO_OPEN_MAX,
           });
@@ -1552,6 +1572,45 @@ function renderContent() {
       };
       renderChips();
       section.appendChild(chipsHost);
+    }
+
+    // 値下げだけ「まとめ方」を切り替えられる。日付ごとが既定、カテゴリごとにすると
+    // 「シャツで今どれが下がっているか」を日付をまたいで見られる。
+    if (eventConfig.key === "markdown") {
+      const sw = document.createElement("div");
+      sw.className = "view-switch group-switch";
+      const lab = document.createElement("span");
+      lab.className = "view-switch-label";
+      lab.textContent = "まとめ方";
+      sw.appendChild(lab);
+      const tabs = document.createElement("div");
+      tabs.className = "tabs view-tabs";
+      tabs.setAttribute("role", "group");
+      for (const [mode, text] of [["date", "日付"], ["category", "カテゴリ"]]) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.dataset.mode = mode;
+        btn.textContent = text;
+        tabs.appendChild(btn);
+      }
+      const sync = () => {
+        for (const btn of tabs.querySelectorAll("button")) {
+          const on = btn.dataset.mode === state.markdownGroup;
+          btn.classList.toggle("active", on);
+          btn.setAttribute("aria-pressed", String(on));
+        }
+      };
+      tabs.addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-mode]");
+        if (!btn || btn.dataset.mode === state.markdownGroup) return;
+        state.markdownGroup = btn.dataset.mode;
+        saveMarkdownGroup(state.markdownGroup);
+        sync();
+        renderGroups();
+      });
+      sync();
+      sw.appendChild(tabs);
+      section.appendChild(sw);
     }
 
     renderGroups();
