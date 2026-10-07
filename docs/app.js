@@ -1079,7 +1079,7 @@ function appendProductGroup(
   section,
   labelText,
   products,
-  { breakdown = false, open = false, includeHidden = false } = {}
+  { breakdown = false, sortByStage = breakdown, open = false, includeHidden = false } = {}
 ) {
   // 買えるものだけを一覧の主役にする。終了した期間限定と在庫なしは、開かないと
   // 出てこない位置(グループ内の「終了・在庫なし」)へ落とす。見出しの件数も
@@ -1132,10 +1132,15 @@ function appendProductGroup(
     if (buyable.length > 0) {
       // 未確認(直近の巡回で見つからなかった)は後ろへ。日付でまとめたグループは
       // そのうえで段階順に並べる — 見出しの内訳と同じ並びでカードが出る。
+      // 段階順にしないときは、カテゴリ順(トップス→シャツ→…)にまとめて並べる。
+      const categoryOrder = categoryOrderFor(state.brand, [...new Set(buyable.map((p) => p.category))]);
+      const categoryRank = (c) => categoryOrder.indexOf(c);
       const ordered = [...buyable].sort(
         (a, b) =>
           (a.unconfirmed ? 1 : 0) - (b.unconfirmed ? 1 : 0) ||
-          (breakdown ? stageRankOf(stageLabelOf(a)) - stageRankOf(stageLabelOf(b)) : 0)
+          (sortByStage
+            ? stageRankOf(stageLabelOf(a)) - stageRankOf(stageLabelOf(b))
+            : categoryRank(a.category) - categoryRank(b.category))
       );
       group.appendChild(buildProductList(ordered));
     }
@@ -1179,6 +1184,11 @@ function markdownKindOf(stats) {
 
 // "2026-09-02"(日本時間の暦日)→ "9/2"。stageDateFormatter は Asia/Tokyo なので、
 // UTC の0時として渡せばその日の朝9時＝同じ日として出る。
+// "2026-10-06" → "火"。日付グループの見出しで、定例(火)か緊急(木)かを一目で分けるため。
+function weekdayJaOf(jstDay) {
+  return WEEKDAY_LABELS[new Date(`${jstDay}T00:00:00Z`).getUTCDay()] ?? "";
+}
+
 function formatJstDayLabel(jstDay) {
   return stageDateFormatter.format(new Date(`${jstDay}T00:00:00Z`));
 }
@@ -1466,29 +1476,31 @@ function renderContent() {
         `${shownBuyable.length}件` +
         (shownUnbuyable > 0 ? `(ほかに終了・在庫なし ${shownUnbuyable}件)` : "");
 
-      if (eventConfig.key === "markdown") {
-        // Grouped by 値下げ段階 instead of category here — how many times a
-        // product has been discounted is the more useful axis to browse this
-        // particular section by (category grouping is still used everywhere
-        // else). 初値下げ is always exactly stage 1, so grouping it the same
-        // way wouldn't add anything.
-        //
-        // 日付で絞り込むと、この段階グループがそのまま「その日に値下げされた
-        // 商品は何段階目だったか」の答えになる。
-        const byStage = new Map();
+      if (eventConfig.key === "markdown" && selectedDate === null) {
+        // 値下げは「いつ下がったか」が主軸。段階でまとめると、ある日に何が
+        // 下がったかを見るのに段階グループを全部開いて回ることになる。
+        // 日付ごと(新しい順)にまとめ、段階は見出しの内訳とカードのバッジで読む。
+        const byDay = new Map();
+        const undated = [];
         for (const product of shown) {
-          const stage = markdownStageCount(markdownStagePoints(product.history));
-          if (!byStage.has(stage)) byStage.set(stage, []);
-          byStage.get(stage).push(product);
+          const key = dateBucketKeyOf(product, dateOf, dateBucket);
+          if (!key) {
+            undated.push(product);
+            continue;
+          }
+          if (!byDay.has(key)) byDay.set(key, []);
+          byDay.get(key).push(product);
         }
-        // 値上げ後(0段階)は値下げではないので、段階の後ろに回す。
-        for (const stage of [...byStage.keys()].sort((a, b) => (a || Infinity) - (b || Infinity))) {
-          const group = byStage.get(stage);
-          appendProductGroup(groupsHost, markdownStageLabel(stage), group, {
-            // その日に絞り込んでいて件数が少なければ、開く操作は手間でしかない。
-            open: selectedDate !== null && group.filter((p) => !p.hidden).length <= AUTO_OPEN_MAX,
+        const days = [...byDay.keys()].sort((a, b) => (a < b ? 1 : -1));
+        days.forEach((day, i) => {
+          const group = byDay.get(day);
+          appendProductGroup(groupsHost, `${dateBucket.labelOf(day)}(${weekdayJaOf(day)})`, group, {
+            breakdown: true,
+            sortByStage: false,
+            open: i === 0 && group.filter((p) => !p.hidden).length <= AUTO_OPEN_MAX,
           });
-        }
+        });
+        if (undated.length > 0) appendProductGroup(groupsHost, "日付不明", undated, { sortByStage: false });
       } else {
         const byCategoryNow = new Map();
         for (const product of shown) {
@@ -1500,7 +1512,10 @@ function renderContent() {
           appendProductGroup(groupsHost, category, group, {
             // 期間限定は「何回目の周期か」が段階に相当する。初値下げ・初期間限定は
             // 定義上いつも1回目なので、内訳を出しても情報が増えない。
-            breakdown: selectedDate !== null && eventConfig.key === "limited",
+            // 値下げで日付を選んだときは、カテゴリの見出しに「2段階目3・3段階目1」を
+            // 添える — その日に下がった商品が何段階目かを開かずに読むため。
+            breakdown: selectedDate !== null && (eventConfig.key === "limited" || eventConfig.key === "markdown"),
+            sortByStage: eventConfig.key !== "markdown",
             includeHidden: pastPeriod,
             open: selectedDate !== null && group.filter((p) => pastPeriod || !p.hidden).length <= AUTO_OPEN_MAX,
           });
