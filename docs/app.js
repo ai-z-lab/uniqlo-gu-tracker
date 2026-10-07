@@ -423,6 +423,12 @@ function nextJstDay(jstDay) {
   return new Date(date.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+function prevJstDay(jstDay) {
+  const date = new Date(`${jstDay}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Date(date.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 // 商品の履歴を「日本時間の1日につき1行」に畳む。
 //
 // スクレイパーは同じ商品・同じ日の行を上書きするので基本は1日1行だが、
@@ -463,7 +469,35 @@ function weekdayPriceChangeStats(products) {
   }));
   let skippedChanges = 0;
 
+  // 巡回した日。初値下げ(前日まで値下げ一覧に無かった商品)を数えるのに使う。
+  const crawlDays = new Set();
+  for (const product of products) for (const row of product.history) crawlDays.add(jstDayOf(row.scraped_at));
+  const firstCrawlDay = [...crawlDays].filter(Boolean).sort()[0] ?? null;
+
   for (const product of products) {
+    // 初値下げは「前日まで一覧に無かった商品が、その日値下げ一覧に入った」こと
+    // そのものが値下げ。前日の行が無いので下の前日比較には乗らず、以前は
+    // グラフから丸ごと抜けていた(木曜の緊急値下げはほとんどがこれ)。前日も
+    // 巡回できていて、記録開始日でない場合だけ数える。
+    const first = product.history[0];
+    const firstDay = first ? jstDayOf(first.scraped_at) : null;
+    if (
+      firstDay &&
+      firstDay !== firstCrawlDay &&
+      MARKDOWN_EVENT_TYPES.has(first.event_type) &&
+      crawlDays.has(prevJstDay(firstDay))
+    ) {
+      const weekday = weekdayIndexOf(firstDay);
+      if (weekday !== null) {
+        const bucket = byWeekday[weekday];
+        bucket.comparisons += 1;
+        bucket.downs += 1;
+        bucket.observedDays.add(firstDay);
+        if (!bucket.downsByDay.has(firstDay)) bucket.downsByDay.set(firstDay, []);
+        bucket.downsByDay.get(firstDay).push(product);
+      }
+    }
+
     const byDay = rowsByJstDay(product.history);
     const days = [...byDay.keys()].sort();
     for (let i = 1; i < days.length; i++) {
