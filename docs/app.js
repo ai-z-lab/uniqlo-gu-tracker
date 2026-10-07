@@ -5,6 +5,10 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 const statusEl = document.getElementById("status");
 const updatedEl = document.getElementById("updated");
+const toolbarEl = document.getElementById("toolbar");
+const searchEl = document.getElementById("search");
+const categoryFilterEl = document.getElementById("category-filter");
+const sectionTabsEl = document.getElementById("section-tabs");
 const contentEl = document.getElementById("content");
 const brandTabsEl = document.getElementById("brand-tabs");
 const genderTabsEl = document.getElementById("gender-tabs");
@@ -124,7 +128,7 @@ function saveMarkdownGroup(mode) {
   }
 }
 
-let state = { brand: "uniqlo", gender: "men", weekday: ALL_WEEKDAYS, view: loadView(), markdownGroup: loadMarkdownGroup() };
+let state = { brand: "uniqlo", gender: "men", weekday: ALL_WEEKDAYS, view: loadView(), markdownGroup: loadMarkdownGroup(), section: "today", query: "", category: null };
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
 
 const currencyFormatter = (currency) =>
@@ -1470,19 +1474,29 @@ function changedOnDay(product, key, day) {
   return Boolean(at) && jstDayOf(at) === day;
 }
 
-function appendTodaySection(container, bucket) {
-  const all = [];
-  for (const e of EVENT_TYPE_CONFIG) for (const list of Object.values(bucket[e.key] || {})) for (const p of list) all.push([e.key, p]);
-  let latestDay = null;
-  for (const [, p] of all) {
-    const d = jstDayOf(p.latest.scraped_at);
-    if (d && (latestDay === null || d > latestDay)) latestDay = d;
-  }
-  if (!latestDay) return;
-  const latestAt = all.reduce((m, [, p]) => (p.latest.scraped_at > m ? p.latest.scraped_at : m), "");
+// 最新の巡回日時。絞り込み前の全商品から取る(カテゴリで絞っても「今日」の基準は動かさない)。
+function latestCrawlOf(bucket) {
+  let latestAt = "";
+  for (const e of EVENT_TYPE_CONFIG)
+    for (const list of Object.values(bucket[e.key] || {}))
+      for (const p of list) if (p.latest.scraped_at > latestAt) latestAt = p.latest.scraped_at;
+  return latestAt ? { latestAt, latestDay: jstDayOf(latestAt) } : null;
+}
+
+function todayChangesOf(bucket, latestDay) {
+  const changed = [];
+  for (const e of EVENT_TYPE_CONFIG)
+    for (const list of Object.values(bucket[e.key] || {}))
+      for (const p of list) if (changedOnDay(p, e.key, latestDay)) changed.push(p);
+  return changed;
+}
+
+function appendTodaySection(container, bucket, crawl) {
+  if (!crawl) return;
+  const { latestAt, latestDay } = crawl;
   const latestTime = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit" }).format(new Date(latestAt));
 
-  const changed = all.filter(([key, p]) => changedOnDay(p, key, latestDay)).map(([, p]) => p);
+  const changed = todayChangesOf(bucket, latestDay);
   const isToday = latestDay === jstDayOf(new Date());
 
   const section = document.createElement("section");
@@ -1525,11 +1539,103 @@ function appendTodaySection(container, bucket) {
   container.appendChild(section);
 }
 
+// 検索語の正規化。全角/半角・大文字小文字・ひらがな/カタカナの違いで外さない。
+function normalizeQuery(text) {
+  return String(text ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u3041-\u3096]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60))
+    .replace(/\s+/g, "");
+}
+
+function countBuyable(byCategory) {
+  return Object.values(byCategory || {}).reduce((n, list) => n + list.filter((p) => !p.hidden).length, 0);
+}
+
+// 上部の操作バー: 検索・カテゴリ・セクションタブ。検索窓は作り直すと入力中の
+// 文字やフォーカスが飛ぶので、index.html 側に1つだけ置いて中身(選択肢とタブ)だけ描き直す。
+function renderToolbar(rawBucket, bucket, crawl) {
+  toolbarEl.hidden = false;
+
+  // カテゴリの選択肢はブランドごとに変わる。
+  const cats = new Set();
+  for (const e of EVENT_TYPE_CONFIG) for (const c of Object.keys(rawBucket[e.key] || {})) cats.add(c);
+  const ordered = categoryOrderFor(state.brand, [...cats]);
+  if (state.category && !cats.has(state.category)) state.category = null;
+  categoryFilterEl.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "全カテゴリ";
+  categoryFilterEl.appendChild(all);
+  for (const c of ordered) {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = c;
+    categoryFilterEl.appendChild(opt);
+  }
+  categoryFilterEl.value = state.category ?? "";
+
+  const tabs = [
+    { key: "today", label: "今日", count: crawl ? todayChangesOf(bucket, crawl.latestDay).filter((p) => !p.hidden).length : 0 },
+    ...EVENT_TYPE_CONFIG.map((e) => ({ key: e.key, label: e.label, count: countBuyable(bucket[e.key]) })),
+    { key: "trend", label: "曜日の傾向", count: null },
+  ];
+  sectionTabsEl.innerHTML = "";
+  for (const t of tabs) {
+    // 0件の一覧のタブは出さない(タブが横にあふれるだけなので)。今日と、いま開いている一覧は残す。
+    if (t.count === 0 && t.key !== "today" && t.key !== state.section) continue;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.section = t.key;
+    btn.textContent = t.count === null ? t.label : `${t.label} ${t.count}`;
+    const on = !state.query && t.key === state.section;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", String(on));
+    sectionTabsEl.appendChild(btn);
+  }
+}
+
+function appendSearchResults(container, bucket) {
+  const section = document.createElement("section");
+  section.className = "section";
+  section.style.setProperty("--status-color", "var(--text)");
+  const header = document.createElement("div");
+  header.className = "section-header";
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = `「${state.query.trim()}」の検索結果`;
+  const count = document.createElement("span");
+  count.className = "count";
+  header.appendChild(label);
+  header.appendChild(count);
+  section.appendChild(header);
+
+  let total = 0;
+  for (const e of EVENT_TYPE_CONFIG) {
+    const list = Object.values(bucket[e.key] || {}).flat();
+    if (list.length === 0) continue;
+    total += list.length;
+    appendProductGroup(section, e.label, list, {
+      breakdown: e.key === "markdown" || e.key === "limited",
+      sortByStage: false,
+      open: true,
+    });
+  }
+  count.textContent = `${total}件`;
+  if (total === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "一致する商品はありません(値下げ・期間限定の一覧に載っている商品だけが対象です)。";
+    section.appendChild(empty);
+  }
+  container.appendChild(section);
+}
+
 function renderContent() {
   contentEl.innerHTML = "";
   contentEl.style.setProperty("--brand-color", BRAND_CONFIG[state.brand].color);
 
-  const bucket = index?.[state.brand]?.[state.gender];
+  let bucket = index?.[state.brand]?.[state.gender];
   const hasAny = bucket && EVENT_TYPE_CONFIG.some((e) => bucket[e.key] && Object.keys(bucket[e.key]).length > 0);
 
   if (!hasAny) {
@@ -1540,13 +1646,45 @@ function renderContent() {
     return;
   }
 
-  const everyProduct = EVENT_TYPE_CONFIG.flatMap((e) => Object.values(bucket[e.key] || {}).flat());
+  const rawBucket = bucket;
+  const everyProduct = EVENT_TYPE_CONFIG.flatMap((e) => Object.values(rawBucket[e.key] || {}).flat());
+  const crawl = latestCrawlOf(rawBucket);
 
-  // いちばん上は「今日動いたもの」。値下げ・初値下げ・期間限定入りを1か所に
-  // まとめ、開いた瞬間に今日の答えが出るようにする。
-  appendTodaySection(contentEl, bucket);
+  // カテゴリと検索語で絞った bucket。以降のセクションはすべてこれを使う。
+  const query = normalizeQuery(state.query);
+  bucket = {};
+  for (const e of EVENT_TYPE_CONFIG) {
+    const byCat = {};
+    for (const [cat, list] of Object.entries(rawBucket[e.key] || {})) {
+      if (state.category && cat !== state.category) continue;
+      const kept = query ? list.filter((p) => normalizeQuery(p.latest.product_name).includes(query)) : list;
+      if (kept.length) byCat[cat] = kept;
+    }
+    bucket[e.key] = byCat;
+  }
+
+  renderToolbar(rawBucket, bucket, crawl);
+
+  // 検索中は、どのセクションかに関わらず一致した商品を種類ごとに全部出す。
+  // 「この商品いまいくら?」に1画面で答えるため。
+  if (query) {
+    appendSearchResults(contentEl, bucket);
+    return;
+  }
+
+  // 一度に1セクションだけ出す。全部を縦に並べると、見たい一覧まで長く
+  // スクロールすることになる(上のタブで切り替える)。
+  if (state.section === "today") {
+    appendTodaySection(contentEl, bucket, crawl);
+    return;
+  }
+  if (state.section === "trend") {
+    appendWeekdaySummary(contentEl, everyProduct.filter((p) => !state.category || p.category === state.category));
+    return;
+  }
 
   for (const eventConfig of EVENT_TYPE_CONFIG) {
+    if (eventConfig.key !== state.section) continue;
     const byCategory = bucket[eventConfig.key];
     if (!byCategory) continue;
     const categories = Object.keys(byCategory);
@@ -1725,8 +1863,12 @@ function renderContent() {
     contentEl.appendChild(section);
   }
 
-  // 曜日ごとの傾向は分析向けなので、商品一覧の後ろに置く。
-  appendWeekdaySummary(contentEl, everyProduct);
+  if (!contentEl.hasChildNodes()) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "この条件に該当する商品はありません。";
+    contentEl.appendChild(empty);
+  }
 }
 
 function setActiveTab(container, attr, value) {
@@ -1864,5 +2006,30 @@ async function main() {
   updateTabs();
   renderContent();
 }
+
+// 検索は打つたびに絞り込む(少し待ってから)。
+let searchTimer = null;
+searchEl.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state = { ...state, query: searchEl.value };
+    renderContent();
+  }, 200);
+});
+
+categoryFilterEl.addEventListener("change", () => {
+  state = { ...state, category: categoryFilterEl.value || null };
+  renderContent();
+});
+
+sectionTabsEl.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-section]");
+  if (!btn) return;
+  // 検索中にタブを押したら、検索を解いてそのセクションへ。
+  searchEl.value = "";
+  state = { ...state, section: btn.dataset.section, query: "" };
+  renderContent();
+  toolbarEl.scrollIntoView({ block: "start" });
+});
 
 main();

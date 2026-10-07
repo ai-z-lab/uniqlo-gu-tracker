@@ -105,6 +105,77 @@
       padding: 0.5rem 1.25rem 3rem;
     }
 
+    /* --- 操作バー(検索・カテゴリ・セクション) --- */
+
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: var(--bg);
+      padding: 0.5rem 0 0.4rem;
+      margin-bottom: 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .toolbar-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .search {
+      flex: 1 1 auto;
+      min-width: 0;
+      font: inherit;
+      font-size: 16px; /* iOSで入力時に拡大されないように */
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    .category-filter {
+      flex: 0 0 auto;
+      max-width: 42%;
+      font: inherit;
+      font-size: 16px;
+      padding: 0.5rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    .section-tabs {
+      display: flex;
+      gap: 0.35rem;
+      overflow-x: auto;
+      padding-top: 0.5rem;
+      scrollbar-width: none;
+    }
+
+    .section-tabs::-webkit-scrollbar { display: none; }
+
+    .section-tabs button {
+      flex: 0 0 auto;
+      font: inherit;
+      font-size: 0.8rem;
+      font-weight: 700;
+      padding: 0.35rem 0.8rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .section-tabs button.active {
+      background: var(--text);
+      border-color: var(--text);
+      color: var(--surface);
+    }
+
     /* --- 最終更新 --- */
 
     .updated {
@@ -1271,6 +1342,13 @@
     </div>
 
     <div id="updated" class="updated" hidden></div>
+    <div id="toolbar" class="toolbar" hidden>
+      <div class="toolbar-row">
+        <input id="search" class="search" type="search" placeholder="商品名で検索(例: ヒートテック)" autocomplete="off" enterkeyhint="search" aria-label="商品名で検索">
+        <select id="category-filter" class="category-filter" aria-label="カテゴリで絞り込む"></select>
+      </div>
+      <div id="section-tabs" class="section-tabs" role="group" aria-label="表示する一覧"></div>
+    </div>
     <div id="status">読み込み中…</div>
     <div id="content"></div>
   </main>
