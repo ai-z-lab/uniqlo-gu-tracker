@@ -128,7 +128,7 @@ function saveMarkdownGroup(mode) {
   }
 }
 
-let state = { brand: "uniqlo", gender: "men", weekday: ALL_WEEKDAYS, view: loadView(), markdownGroup: loadMarkdownGroup(), section: "today", query: "", category: null };
+let state = { brand: "uniqlo", gender: "all", weekday: ALL_WEEKDAYS, view: loadView(), markdownGroup: loadMarkdownGroup(), section: "today", query: "", category: null };
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
 
 const currencyFormatter = (currency) =>
@@ -562,7 +562,7 @@ function buildIndex(rows) {
     idx[brand][gender] ??= {};
     idx[brand][gender][eventType] ??= {};
     idx[brand][gender][eventType][category] ??= [];
-    idx[brand][gender][eventType][category].push({
+    const entry = {
       latest,
       history,
       // カテゴリはこの時点で解決済み(latest.category が空なら既定値)。日付で
@@ -572,7 +572,14 @@ function buildIndex(rows) {
       unconfirmed,
       soldOut,
       hidden,
-    });
+    };
+    idx[brand][gender][eventType][category].push(entry);
+    // ALL タブ用。ジェンダーレス化やサイズ展開で、メンズ/レディース/キッズの
+    // 区分をまたいで探す人が多いため、全区分をまとめた一覧も持つ。
+    idx[brand].all ??= {};
+    idx[brand].all[eventType] ??= {};
+    idx[brand].all[eventType][category] ??= [];
+    idx[brand].all[eventType][category].push(entry);
   }
   return idx;
 }
@@ -1882,6 +1889,15 @@ function setActiveTab(container, attr, value) {
 }
 
 function updateTabs() {
+  // データの無い区分のタブは隠す(GU にはベビーの一覧が無い等)。選んでいた区分が
+  // 隠れたら ALL に戻す。
+  if (index) {
+    for (const btn of genderTabsEl.querySelectorAll("button[data-gender]")) {
+      const g = btn.dataset.gender;
+      btn.hidden = g !== "all" && !index[state.brand]?.[g];
+    }
+    if (state.gender !== "all" && !index[state.brand]?.[state.gender]) state = { ...state, gender: "all" };
+  }
   setActiveTab(brandTabsEl, "brand", state.brand);
   setActiveTab(genderTabsEl, "gender", state.gender);
   setActiveTab(viewTabsEl, "view", state.view);

@@ -265,6 +265,10 @@
       background: var(--brand-gu);
       color: #fff;
     }
+    .tabs button[hidden] {
+      display: none;
+    }
+
     .gender-tabs button.active {
       background: var(--text);
       color: var(--surface);
@@ -1330,8 +1334,11 @@
       <button type="button" data-brand="gu">GU</button>
     </div>
     <div class="tabs gender-tabs" id="gender-tabs">
+      <button type="button" data-gender="all">ALL</button>
       <button type="button" data-gender="men">MEN</button>
       <button type="button" data-gender="women">WOMEN</button>
+      <button type="button" data-gender="kids">KIDS</button>
+      <button type="button" data-gender="baby">BABY</button>
     </div>
     <div class="view-switch">
       <span class="view-switch-label" id="view-label">表示</span>

@@ -88,5 +88,59 @@
     "label": "GU アプリ会員特別価格(メンズ)",
     "api": { "genderIds": [2257], "flagCodes": ["appmemberLimited"] },
     "maxProducts": 600
+  },
+  {
+    "id": "uniqlo-sale-kids",
+    "brand": "uniqlo",
+    "gender": "kids",
+    "listingType": "sale",
+    "label": "UNIQLO 値下げ商品(キッズ)",
+    "api": { "genderIds": [1073], "flagCodes": ["discount"] },
+    "maxProducts": 600
+  },
+  {
+    "id": "uniqlo-limited-kids",
+    "brand": "uniqlo",
+    "gender": "kids",
+    "listingType": "limited",
+    "label": "UNIQLO 期間限定価格(キッズ)",
+    "api": { "genderIds": [1073], "flagCodes": ["limitedOffer"] },
+    "maxProducts": 600
+  },
+  {
+    "id": "uniqlo-sale-baby",
+    "brand": "uniqlo",
+    "gender": "baby",
+    "listingType": "sale",
+    "label": "UNIQLO 値下げ商品(ベビー)",
+    "api": { "genderIds": [1074], "flagCodes": ["discount"] },
+    "maxProducts": 600
+  },
+  {
+    "id": "uniqlo-limited-baby",
+    "brand": "uniqlo",
+    "gender": "baby",
+    "listingType": "limited",
+    "label": "UNIQLO 期間限定価格(ベビー)",
+    "api": { "genderIds": [1074], "flagCodes": ["limitedOffer"] },
+    "maxProducts": 600
+  },
+  {
+    "id": "gu-sale-kids",
+    "brand": "gu",
+    "gender": "kids",
+    "listingType": "sale",
+    "label": "GU 値下げ商品(キッズ)",
+    "api": { "genderIds": [2258], "flagCodes": ["discount"] },
+    "maxProducts": 600
+  },
+  {
+    "id": "gu-limited-kids",
+    "brand": "gu",
+    "gender": "kids",
+    "listingType": "limited",
+    "label": "GU 期間限定価格(キッズ)",
+    "api": { "genderIds": [2258], "flagCodes": ["limitedOffer"] },
+    "maxProducts": 600
   }
 ]
