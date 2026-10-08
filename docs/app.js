@@ -1999,6 +1999,34 @@ function renderUpdated(rows) {
   when.textContent = `最終更新 ${updatedTimeFormatter.format(new Date(latest))}(${weekdayJaOf(latestDay)})`;
   updatedEl.appendChild(when);
   updatedEl.hidden = false;
+
+  // 巡回中は記録が途中までしか入っていない(UNIQLOは済んだがGUはまだ、など)。
+  // そのまま「今日の変動なし」と読まれないよう、巡回中であることを出す。
+  // リポジトリは公開なので、GitHubのAPIを認証なしで読める。失敗しても黙って何もしない。
+  checkCrawlInProgress().then((running) => {
+    if (!running) return;
+    badge.className = "updated-badge running";
+    badge.textContent = "巡回中・反映途中";
+    const note = document.createElement("span");
+    note.className = "updated-note";
+    note.textContent = "10分ほどで揃います。揃ってから再読み込みしてください";
+    updatedEl.appendChild(note);
+  });
+}
+
+async function checkCrawlInProgress() {
+  try {
+    const base = "https://api.github.com/repos/ai-z-lab/uniqlo-gu-tracker/actions/workflows/scrape.yml/runs?per_page=1&status=";
+    for (const status of ["in_progress", "queued"]) {
+      const res = await fetch(base + status, { headers: { Accept: "application/vnd.github+json" } });
+      if (!res.ok) return false;
+      const body = await res.json();
+      if ((body.total_count ?? 0) > 0) return true;
+    }
+  } catch {
+    // ネットワーク・回数制限などは表示に影響させない。
+  }
+  return false;
 }
 
 async function main() {
