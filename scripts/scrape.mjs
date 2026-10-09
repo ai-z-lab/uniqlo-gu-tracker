@@ -1320,7 +1320,7 @@ function genderFromLabel(label) {
   if (t === 'WOMEN' || t === 'ウィメンズ' || t === 'レディース') return 'women';
   if (t === 'KIDS' || t === 'キッズ' || t.startsWith('BOYS') || t.startsWith('GIRLS')) return 'kids';
   if (t === 'BABY' || t === 'ベビー') return 'baby';
-  if (t.includes('男女') || t === 'UNISEX') return 'unisex';
+  if (t.includes('男女') || t.includes('ユニセックス') || t === 'UNISEX') return 'unisex';
   return null;
 }
 
