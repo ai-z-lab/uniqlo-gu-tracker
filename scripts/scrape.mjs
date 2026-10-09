@@ -1183,6 +1183,9 @@ async function extractViaApi(source, item, log = () => {}) {
   return {
     url,
     name: item?.name ?? productId,
+    // 商品自身の区分表記(MEN / WOMEN / 男女兼用 / KIDS / BABY)。どの一覧で
+    // 見つけたかより、商品ページに書いてある区分を正とする。
+    gender: genderFromLabel(item?.genderName),
     price: priced.price,
     currency: priced.currency,
     listPrice: priced.listPrice,
@@ -1308,6 +1311,19 @@ function applyRemarkdown(priceType, previousPriceType, log = () => {}) {
 // determined from the pre-run DB state, rather than re-querying (which would
 // now see that first occurrence's own just-written row and wrongly treat the
 // product as not-new / already-tracked).
+// 一覧APIの items[].genderName → price_events.gender。読めない表記は null
+// (呼び出し側で一覧の区分にフォールバックする)。
+function genderFromLabel(label) {
+  const t = String(label ?? '').trim().toUpperCase();
+  if (!t) return null;
+  if (t === 'MEN' || t === 'メンズ') return 'men';
+  if (t === 'WOMEN' || t === 'ウィメンズ' || t === 'レディース') return 'women';
+  if (t === 'KIDS' || t === 'キッズ' || t.startsWith('BOYS') || t.startsWith('GIRLS')) return 'kids';
+  if (t === 'BABY' || t === 'ベビー') return 'baby';
+  if (t.includes('男女') || t === 'UNISEX') return 'unisex';
+  return null;
+}
+
 // 同じ商品がメンズとレディースの両方の一覧に載っていたら 'unisex'(男女兼用)。
 // 以前は先に巡回したレディースだけが記録され、メンズ表記の商品がメンズの
 // 一覧から消えていた。キッズ・ベビーより大人の区分を優先する。
@@ -1350,7 +1366,7 @@ async function recordExtractedProduct(extracted, source, productRunState) {
       extracted.price === existing.price && source.listingType === 'limited' && existing.listingType !== 'limited';
     if (!isCheaper && !upgradesToLimited) {
       // 価格では負けても、どの区分の一覧に載っていたかは記録に足す。
-      const merged = mergeGender(existing.gender, source.gender ?? null);
+      const merged = existing.labeledGender ? existing.gender : mergeGender(existing.gender, source.gender ?? null);
       if (merged !== existing.gender && existing.rowId) {
         const { error } = await supabase.from('price_events').update({ gender: merged }).eq('id', existing.rowId);
         if (!error) existing.gender = merged;
@@ -1396,7 +1412,8 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     product_id: productId,
     product_name: extracted.name,
     brand: source.brand,
-    gender: mergeGender(existing?.gender ?? null, source.gender ?? null),
+    // 商品自身の表記があればそれ。無ければ見つかった一覧の区分を合流させる。
+    gender: extracted.gender ?? mergeGender(existing?.gender ?? null, source.gender ?? null),
     category,
     event_type: eventType,
     url,
@@ -1433,6 +1450,7 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     currency: extracted.currency,
     listingType: source.listingType,
     gender: row.gender,
+    labeledGender: Boolean(extracted.gender),
     rowId,
     isNewProduct,
     previousPrice,
@@ -2406,6 +2424,24 @@ async function probeGenderIds() {
   if (hits.length === 0) console.log('::notice title=gender-probe::no hits');
 }
 
+// 一覧ごとに、商品自身の区分表記(genderName)が何件ずつあるかを注記で出す。
+const GENDER_LABEL_PROBE_TOKEN = 'gender-label-probe';
+
+async function probeGenderLabels() {
+  const sources = await loadSources();
+  for (const source of sources) {
+    const { items } = await discoverProductsViaApi(source);
+    const counts = {};
+    const samples = [];
+    for (const item of items) {
+      const label = item?.genderName ?? '(なし)';
+      counts[label] = (counts[label] ?? 0) + 1;
+      if (/ウィンドプルーフ|シェルパーカ/.test(item?.name ?? '')) samples.push(`${item.name}=${label}`);
+    }
+    console.log(`::notice title=${source.id}::${JSON.stringify(counts)} ${samples.slice(0, 3).join(' / ')}`);
+  }
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2482,6 +2518,10 @@ async function main() {
     }
     if (token === DASHBOARD_PROBE_TOKEN) {
       await probeDashboardQuery();
+      return;
+    }
+    if (token === GENDER_LABEL_PROBE_TOKEN) {
+      await probeGenderLabels();
       return;
     }
     if (token === GENDER_PROBE_TOKEN) {
