@@ -559,9 +559,13 @@ function buildIndex(rows) {
     const category = latest.category || (brand === "gu" ? "グッズ・その他" : "その他");
 
     idx[brand] ??= {};
-    idx[brand][gender] ??= {};
-    idx[brand][gender][eventType] ??= {};
-    idx[brand][gender][eventType][category] ??= [];
+    // 男女兼用はメンズにもレディースにも出す(どちらの一覧にも載っている商品)。
+    const genderKeys = gender === "unisex" ? ["men", "women"] : [gender];
+    for (const g of genderKeys) {
+      idx[brand][g] ??= {};
+      idx[brand][g][eventType] ??= {};
+      idx[brand][g][eventType][category] ??= [];
+    }
     const entry = {
       latest,
       history,
@@ -573,7 +577,7 @@ function buildIndex(rows) {
       soldOut,
       hidden,
     };
-    idx[brand][gender][eventType][category].push(entry);
+    for (const g of genderKeys) idx[brand][g][eventType][category].push(entry);
     // ALL タブ用。ジェンダーレス化やサイズ展開で、メンズ/レディース/キッズの
     // 区分をまたいで探す人が多いため、全区分をまとめた一覧も持つ。
     idx[brand].all ??= {};
