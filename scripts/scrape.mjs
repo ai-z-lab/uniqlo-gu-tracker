@@ -1308,6 +1308,26 @@ function applyRemarkdown(priceType, previousPriceType, log = () => {}) {
 // determined from the pre-run DB state, rather than re-querying (which would
 // now see that first occurrence's own just-written row and wrongly treat the
 // product as not-new / already-tracked).
+// 同じ商品がメンズとレディースの両方の一覧に載っていたら 'unisex'(男女兼用)。
+// 以前は先に巡回したレディースだけが記録され、メンズ表記の商品がメンズの
+// 一覧から消えていた。キッズ・ベビーより大人の区分を優先する。
+const ADULT_GENDERS = new Set(['men', 'women', 'unisex']);
+function mergeGender(current, incoming) {
+  if (!current) return incoming ?? null;
+  if (!incoming || current === incoming) return current;
+  if (current === 'unisex' || incoming === 'unisex') return 'unisex';
+  if ((current === 'men' && incoming === 'women') || (current === 'women' && incoming === 'men')) return 'unisex';
+  if (ADULT_GENDERS.has(current)) return current;
+  if (ADULT_GENDERS.has(incoming)) return incoming;
+  return current;
+}
+
+// gender の check 制約に 'unisex' が無いDB(マイグレーション 0008 未適用)でも
+// 巡回全体を止めないよう、制約違反のときだけ一覧側の区分で書き直す。
+function isGenderCheckViolation(error) {
+  return error && error.code === '23514' && String(error.message ?? '').includes('gender');
+}
+
 async function recordExtractedProduct(extracted, source, productRunState) {
   const url = extracted.url;
   const productId = productIdFromUrl(url, source.brand);
@@ -1329,6 +1349,13 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     const upgradesToLimited =
       extracted.price === existing.price && source.listingType === 'limited' && existing.listingType !== 'limited';
     if (!isCheaper && !upgradesToLimited) {
+      // 価格では負けても、どの区分の一覧に載っていたかは記録に足す。
+      const merged = mergeGender(existing.gender, source.gender ?? null);
+      if (merged !== existing.gender && existing.rowId) {
+        const { error } = await supabase.from('price_events').update({ gender: merged }).eq('id', existing.rowId);
+        if (!error) existing.gender = merged;
+        else if (!isGenderCheckViolation(error)) throw error;
+      }
       return { productId, skipped: true };
     }
   }
@@ -1369,7 +1396,7 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     product_id: productId,
     product_name: extracted.name,
     brand: source.brand,
-    gender: source.gender ?? null,
+    gender: mergeGender(existing?.gender ?? null, source.gender ?? null),
     category,
     event_type: eventType,
     url,
@@ -1383,16 +1410,21 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     scraped_at: nowIso,
   };
 
-  let rowId;
-  if (existingRowId) {
-    const { error: updateError } = await supabase.from('price_events').update(row).eq('id', existingRowId);
-    if (updateError) throw updateError;
-    rowId = existingRowId;
-  } else {
-    const { data, error: insertError } = await supabase.from('price_events').insert(row).select('id').single();
-    if (insertError) throw insertError;
-    rowId = data.id;
+  const writeRow = async (r) => {
+    if (existingRowId) {
+      const { error } = await supabase.from('price_events').update(r).eq('id', existingRowId);
+      return { error, id: existingRowId };
+    }
+    const { data, error } = await supabase.from('price_events').insert(r).select('id').single();
+    return { error, id: data?.id };
+  };
+  let written = await writeRow(row);
+  if (isGenderCheckViolation(written.error) && row.gender === 'unisex') {
+    row.gender = source.gender ?? null;
+    written = await writeRow(row);
   }
+  if (written.error) throw written.error;
+  const rowId = written.id;
 
   // Only recorded as done-this-run on success, so if this attempt failed a
   // later occurrence of the same product still gets a chance.
@@ -1400,6 +1432,7 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     price: extracted.price,
     currency: extracted.currency,
     listingType: source.listingType,
+    gender: row.gender,
     rowId,
     isNewProduct,
     previousPrice,
