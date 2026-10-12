@@ -2491,7 +2491,17 @@ async function compareProducts(spec) {
     const sizes = (r.sizes ?? []).map((z) => z.name).join('/');
     const price = r.prices?.base?.value ?? null;
     const promo = r.prices?.promo?.value ?? null;
-    console.log(`::notice title=${id}::status${res.status} ${r.name ?? ''} 区分:${r.genderName ?? ''} 定価:${price} 販売:${promo} 色:${colors} サイズ:${sizes} 素材:${String(r.composition ?? '').slice(0, 80)}`);
+    console.log(`::notice title=${id}::status${res.status} ${r.name ?? ''} 区分:${r.genderName ?? ''} 定価:${price} 販売:${promo} 色:${colors} サイズ:${sizes}`);
+    const pick = (o) => JSON.stringify(o ?? null).slice(0, 700);
+    console.log(`::notice title=${id} flags::${pick(r.flags)}`);
+    const l2s = await getL2s(origin, id, '00', `${origin}/jp/ja/`);
+    const l2 = l2s.body?.result?.l2s ?? [];
+    const stock = l2s.body?.result?.stocks ?? {};
+    console.log(`::notice title=${id} l2s::count=${l2.length} first=${pick(l2[0])} stocks=${pick(Object.values(stock).slice(0, 3))}`);
+    const keys = Object.keys(r).join(',');
+    console.log(`::notice title=${id} keys::${keys.slice(0, 900)}`);
+    const dateish = JSON.stringify(r).match(/"[^"]*(?:[Dd]ate|[Rr]elease|[Ss]ale[Ss]tart|[Ss]tart)[^"]*":\s*("[^"]*"|\d+|true|false|null)/g) ?? [];
+    console.log(`::notice title=${id} dates::${dateish.slice(0, 12).join(' ')}`);
     await sleep(REQUEST_DELAY_MS);
   }
 }
