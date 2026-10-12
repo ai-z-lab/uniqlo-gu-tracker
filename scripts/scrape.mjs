@@ -2442,6 +2442,37 @@ async function probeGenderLabels() {
   }
 }
 
+// 商品名で price_events を引いて、履歴を注記で出す(調査用)。
+// DEBUG_URL に "lookup:キーワード" を渡す。公開キー(読み取り専用)で読む。
+const LOOKUP_PREFIX = 'lookup:';
+
+async function lookupProducts(keyword) {
+  const { SUPABASE_URL: url, SUPABASE_PUBLISHABLE_KEY: key } = await import('../docs/config.js');
+  const q = encodeURIComponent(`*${keyword}*`);
+  const res = await fetch(
+    `${url}/rest/v1/price_events?select=product_id,product_name,brand,gender,event_type,price,list_price,price_type,scraped_at&product_name=ilike.${q}&order=scraped_at.asc&limit=2000`,
+    { headers: { apikey: key, Authorization: `Bearer ${key}` } }
+  );
+  const rows = await res.json();
+  const byProduct = new Map();
+  for (const r of rows) {
+    if (!byProduct.has(r.product_id)) byProduct.set(r.product_id, []);
+    byProduct.get(r.product_id).push(r);
+  }
+  const jst = (iso) => new Date(new Date(iso).getTime() + 9 * 3600 * 1000).toISOString().slice(5, 10);
+  if (byProduct.size === 0) console.log(`::notice title=lookup::「${keyword}」は記録なし`);
+  for (const [id, hist] of byProduct) {
+    const steps = [];
+    for (const r of hist) {
+      const last = steps[steps.length - 1];
+      if (!last || last.price !== r.price || last.type !== r.event_type) steps.push({ price: r.price, type: r.event_type, from: jst(r.scraped_at), to: jst(r.scraped_at) });
+      else last.to = jst(r.scraped_at);
+    }
+    const h = hist[hist.length - 1];
+    console.log(`::notice title=${id}::${h.brand} ${h.gender} ${h.product_name} 定価${h.list_price} | ` + steps.map((x) => `${x.type} ¥${x.price} ${x.from}〜${x.to}`).join(' → '));
+  }
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2514,6 +2545,10 @@ async function main() {
     const token = DEBUG_URL.trim();
     if (token === DRY_RUN_TOKEN) {
       await dryRunSources(await loadSources());
+      return;
+    }
+    if (token.startsWith(LOOKUP_PREFIX)) {
+      await lookupProducts(token.slice(LOOKUP_PREFIX.length));
       return;
     }
     if (token === DASHBOARD_PROBE_TOKEN) {
