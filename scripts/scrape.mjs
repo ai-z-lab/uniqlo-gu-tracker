@@ -107,13 +107,20 @@ const CATEGORY_KEYWORDS = {
 };
 const FALLBACK_CATEGORY = { uniqlo: 'その他', gu: 'グッズ・その他' };
 
-function categorizeProduct(brand, name) {
+// 「シアーチェックT(長袖)」「ワッフルT」「UT」のように、Tシャツを「T」とだけ
+// 書く商品名がある。語末か、括弧・スラッシュ・空白の直前の T をTシャツとみなす。
+const T_SHIRT_SUFFIX = /T(?=$|[(/\s])/;
+
+function categorizeProduct(brand, rawName) {
   const fallback = FALLBACK_CATEGORY[brand] || 'その他';
-  if (!name) return fallback;
+  if (!rawName) return fallback;
+  // 全角英数・全角括弧を半角に揃えてから判定する(「Ｔシャツ」「（長袖）」対策)。
+  const name = rawName.normalize('NFKC');
   const rules = CATEGORY_KEYWORDS[brand] || [];
   for (const [category, keywords] of rules) {
     if (keywords.some((keyword) => name.includes(keyword))) return category;
   }
+  if (T_SHIRT_SUFFIX.test(name)) return 'トップス';
   return fallback;
 }
 
