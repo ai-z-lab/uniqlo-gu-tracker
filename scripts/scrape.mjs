@@ -1233,6 +1233,20 @@ async function fetchLatestRecordedPrice(productId) {
   return data?.[0] ?? null;
 }
 
+// 指定時刻の日(日本時間)より前の最新行。同じ日の2回目の巡回が比較に使う。
+async function fetchLatestRecordedPriceBefore(productId, iso) {
+  const dayStartJst = new Date(`${jstDay(iso)}T00:00:00+09:00`).toISOString();
+  const { data, error } = await supabase
+    .from('price_events')
+    .select('id, price, currency, price_type, limited_price_end_date, scraped_at')
+    .eq('product_id', productId)
+    .lt('scraped_at', dayStartJst)
+    .order('scraped_at', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return data?.[0] ?? null;
+}
+
 const jstDay = (iso) => new Date(new Date(iso).getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 // Same JST calendar day, i.e. was the last row for this product recorded on
@@ -1388,11 +1402,15 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     existingRowId = existing.rowId;
   } else {
     const latest = await fetchLatestRecordedPrice(productId);
-    isNewProduct = !latest;
-    previousPrice = latest?.price ?? null;
-    previousCurrency = latest?.currency ?? null;
-    previousPriceType = previousPriceTypeOf(latest);
     existingRowId = latest && isSameJstCalendarDay(latest.scraped_at, nowIso) ? latest.id : null;
+    // 今日すでに記録がある(同じ日の2回目の巡回)なら、比較の相手はその行ではなく
+    // 前日以前の最新行。今日の行と比べると「初値下げ」「値下げ」が「変動なし」に
+    // 上書きされて消えていた。
+    const baseline = existingRowId ? await fetchLatestRecordedPriceBefore(productId, latest.scraped_at) : latest;
+    isNewProduct = !baseline;
+    previousPrice = baseline?.price ?? null;
+    previousCurrency = baseline?.currency ?? null;
+    previousPriceType = previousPriceTypeOf(baseline);
   }
 
   // Read off the page, then refined against this product's own history.
