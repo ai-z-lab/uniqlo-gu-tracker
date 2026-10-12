@@ -551,6 +551,15 @@ function buildIndex(rows) {
     // (appendProductGroup がグループ内の折りたたみに退避する)。
     // stock_status が null の商品は「在庫が読めなかった」であって在庫なしでは
     // ないため、ここには入れない。
+    // 定価のまま値下げ一覧に載っていた行(発売前の先出しなど)は値下げではない。
+    // 巡回側でも記録しなくしたが、それ以前の行が残っているので表示側でも外す。
+    if (
+      latest.list_price != null &&
+      latest.price >= latest.list_price &&
+      (MARKDOWN_EVENT_TYPES.has(latest.event_type) || LIMITED_EVENT_TYPES.has(latest.event_type))
+    ) {
+      continue;
+    }
     const soldOut = latest.stock_status === "stock_out";
     const hidden = offerOver || soldOut;
     const brand = latest.brand;
