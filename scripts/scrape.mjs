@@ -2473,6 +2473,29 @@ async function lookupProducts(keyword) {
   }
 }
 
+// 2つ以上の商品番号を並べて、商品詳細(名前・区分・色・サイズ・価格)を注記で出す。
+// DEBUG_URL に "compare:gu:E360872-000,E362266-000" のように渡す。
+const COMPARE_PREFIX = 'compare:';
+
+async function compareProducts(spec) {
+  const [brand, ids] = spec.split(':');
+  const origin = brandOrigin(brand);
+  for (const id of ids.split(',')) {
+    const res = await fetch(`${origin}/jp/api/commerce/v5/ja/products/${id}/price-groups/00/details?httpFailure=true`, {
+      headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9', Referer: `${origin}/jp/ja/` },
+    });
+    let body = null;
+    try { body = await res.json(); } catch {}
+    const r = body?.result ?? {};
+    const colors = (r.colors ?? []).map((c) => c.name).join('/');
+    const sizes = (r.sizes ?? []).map((z) => z.name).join('/');
+    const price = r.prices?.base?.value ?? null;
+    const promo = r.prices?.promo?.value ?? null;
+    console.log(`::notice title=${id}::status${res.status} ${r.name ?? ''} 区分:${r.genderName ?? ''} 定価:${price} 販売:${promo} 色:${colors} サイズ:${sizes} 素材:${String(r.composition ?? '').slice(0, 80)}`);
+    await sleep(REQUEST_DELAY_MS);
+  }
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2545,6 +2568,10 @@ async function main() {
     const token = DEBUG_URL.trim();
     if (token === DRY_RUN_TOKEN) {
       await dryRunSources(await loadSources());
+      return;
+    }
+    if (token.startsWith(COMPARE_PREFIX)) {
+      await compareProducts(token.slice(COMPARE_PREFIX.length));
       return;
     }
     if (token.startsWith(LOOKUP_PREFIX)) {
