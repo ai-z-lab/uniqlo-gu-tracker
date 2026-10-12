@@ -1362,12 +1362,6 @@ async function recordExtractedProduct(extracted, source, productRunState) {
   const url = extracted.url;
   const productId = productIdFromUrl(url, source.brand);
 
-  // 値下げ一覧・期間限定一覧に載っていても、販売価格が定価のままなら値引き
-  // されていない(発売前の商品が一覧に先出しされる例がある: GU E362266)。
-  // 値下げとして記録しない。
-  if (extracted.listPrice != null && extracted.price >= extracted.listPrice) {
-    return { productId, skipped: true, notDiscounted: true };
-  }
 
   const existing = productRunState.get(productId);
   if (existing) {
