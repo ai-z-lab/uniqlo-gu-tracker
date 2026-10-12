@@ -551,15 +551,6 @@ function buildIndex(rows) {
     // (appendProductGroup がグループ内の折りたたみに退避する)。
     // stock_status が null の商品は「在庫が読めなかった」であって在庫なしでは
     // ないため、ここには入れない。
-    // 定価のまま値下げ一覧に載っていた行(発売前の先出しなど)は値下げではない。
-    // 巡回側でも記録しなくしたが、それ以前の行が残っているので表示側でも外す。
-    if (
-      latest.list_price != null &&
-      latest.price >= latest.list_price &&
-      (MARKDOWN_EVENT_TYPES.has(latest.event_type) || LIMITED_EVENT_TYPES.has(latest.event_type))
-    ) {
-      continue;
-    }
     const soldOut = latest.stock_status === "stock_out";
     const hidden = offerOver || soldOut;
     const brand = latest.brand;
@@ -621,6 +612,18 @@ function priceHistoryTextFor({ isMarkdownFamily, isLimitedFamily, stagePoints, p
   const points = priceStagePoints(history, null);
   return points.length > 1 ? formatMarkdownStageHistory(points) : null;
 }
+
+// 定価のまま値下げ・期間限定の一覧に載っている商品。発売前の先出しや、同名の
+// 旧商品(定価が高かった)との取り違えなど、サイト側の掲載ミスの可能性がある。
+// 隠さずに記録・表示を続け、目印を付けて様子を見る。
+function isListedAtListPrice(latest) {
+  return (
+    latest.list_price != null &&
+    latest.price >= latest.list_price &&
+    (MARKDOWN_EVENT_TYPES.has(latest.event_type) || LIMITED_EVENT_TYPES.has(latest.event_type))
+  );
+}
+const LIST_PRICE_NOTE = "定価のまま掲載(要確認)";
 
 function renderCard(product) {
   const { latest, history, offerOver, unconfirmed } = product;
@@ -764,6 +767,13 @@ function renderCard(product) {
     endDate.className = `end-date${offerOver ? " over" : ""}`;
     endDate.textContent = offerOver ? `${endDateText}(終了)` : endDateText;
     card.appendChild(endDate);
+  }
+
+  if (isListedAtListPrice(latest)) {
+    const note = document.createElement("div");
+    note.className = "unconfirmed-note";
+    note.textContent = LIST_PRICE_NOTE;
+    card.appendChild(note);
   }
 
   if (unconfirmed) {
@@ -933,6 +943,7 @@ function renderTableRow(product) {
   };
   if (offerOver) addNote("終了", "over");
   else if (unconfirmed) addNote(`未確認(最終確認 ${stageDateFormatter.format(new Date(latest.scraped_at))})`, "stale");
+  if (isListedAtListPrice(latest)) addNote(LIST_PRICE_NOTE, "stale");
   if (latest.price_type === "member") addNote("アプリ会員価格", "member");
   if (latest.price_type === "remarkdown") addNote("再値下げ", "remarkdown");
   const endDateText = formatLimitedPriceEndDate(latest.limited_price_end_date);
