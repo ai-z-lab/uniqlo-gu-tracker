@@ -485,7 +485,10 @@ function weekdayPriceChangeStats(products) {
   // 巡回した日。初値下げ(前日まで値下げ一覧に無かった商品)を数えるのに使う。
   const crawlDays = new Set();
   for (const product of products) for (const row of product.history) crawlDays.add(jstDayOf(row.scraped_at));
+  // 読み込んだ一番古い日とその翌日は、途中で読み込みが切れている可能性があるので
+  // 「初登場」を数えない(切れ目の商品がまとめて新規に見える)。
   const firstCrawlDay = [...crawlDays].filter(Boolean).sort()[0] ?? null;
+  const secondCrawlDay = firstCrawlDay ? nextJstDay(firstCrawlDay) : null;
 
   for (const product of products) {
     // 初値下げは「前日まで一覧に無かった商品が、その日値下げ一覧に入った」こと
@@ -497,6 +500,7 @@ function weekdayPriceChangeStats(products) {
     if (
       firstDay &&
       firstDay !== firstCrawlDay &&
+      firstDay !== secondCrawlDay &&
       MARKDOWN_EVENT_TYPES.has(first.event_type) &&
       crawlDays.has(prevJstDay(firstDay))
     ) {
@@ -562,6 +566,9 @@ function buildIndex(rows) {
     const hidden = offerOver || soldOut;
     const brand = latest.brand;
     const gender = latest.gender || "unknown";
+    // GU の「アプリ会員まとめ買い」(3点で¥1,290 等)は1点の価格が定価のまま会員価格の
+    // 一覧に載り、まとめ買いの期限(12/31 等)が終了日として入ってくる。値下げではない。
+    if (latest.price_type === "member" && isListedAtListPrice(latest, history)) continue;
     const rawEventType = latest.event_type || "markdown";
     // 期間限定として記録されていても、価格の種類が会員価格なら別セクションへ。
     const eventType = LIMITED_EVENT_TYPES.has(rawEventType) && latest.price_type === "member" ? "member" : rawEventType;
@@ -1987,23 +1994,31 @@ const PAGE_SIZE = 1000;
 // 際限なく伸びる。値下げの段階も期間限定の周期もこの範囲に収まる。
 const HISTORY_WINDOW_DAYS = 35;
 // 窓を広げすぎた時の保険。ここに達したら、黙って切り捨てず気づけるようにする。
-const MAX_ROWS = 30000;
+const MAX_ROWS = 80000;
 
 async function fetchPriceEvents() {
   const since = new Date(Date.now() - HISTORY_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const rows = [];
-
-  for (let from = 0; from < MAX_ROWS; from += PAGE_SIZE) {
-    const { data, error } = await supabase
+  const fetchPage = (from) =>
+    supabase
       .from("price_events")
       .select(PRICE_EVENT_COLUMNS)
       .gte("scraped_at", since)
       .order("scraped_at", { ascending: false })
       .range(from, from + PAGE_SIZE - 1);
-    if (error) return { rows: null, error };
-    rows.push(...data);
-    // 1ページ分に満たなければ、そこが最後。
-    if (data.length < PAGE_SIZE) return { rows, error: null };
+
+  // 1ページずつ順に取ると行数が増えたとき(キッズ追加後は35日で4万行超)に遅いので、
+  // 数ページずつ並行で取る。どこかで1ページ分に満たなければ、そこが最後。
+  const PARALLEL = 6;
+  for (let from = 0; from < MAX_ROWS; from += PAGE_SIZE * PARALLEL) {
+    const starts = [];
+    for (let i = 0; i < PARALLEL && from + i * PAGE_SIZE < MAX_ROWS; i++) starts.push(from + i * PAGE_SIZE);
+    const results = await Promise.all(starts.map(fetchPage));
+    for (const { data, error } of results) {
+      if (error) return { rows: null, error };
+      rows.push(...data);
+      if (data.length < PAGE_SIZE) return { rows, error: null };
+    }
   }
 
   console.warn(
