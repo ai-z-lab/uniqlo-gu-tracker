@@ -32,7 +32,7 @@ const EVENT_TYPE_CONFIG = [
   { key: "first_limited", label: "初期間限定" },
   // GU のアプリ会員特別価格。期間限定の一覧にも載るが、別の値引き(月曜・金曜に
   // 入れ替わる)なので期間限定とは分ける。混ぜると期間限定の件数が実態の数倍になる。
-  { key: "member", label: "アプリ会員価格" },
+  { key: "member", label: "アプリ会員価格", labelByBrand: { gu: "期間限定(アプリ会員)" } },
   { key: "markdown", label: "値下げ" },
   { key: "first_markdown", label: "初値下げ" },
   { key: "price_up", label: "値上げ" },
@@ -634,6 +634,12 @@ function isListedAtListPrice(latest, history = []) {
   return !history.some((row) => row.price > latest.price);
 }
 const LIST_PRICE_NOTE = "定価のまま掲載(要確認)";
+
+// セクション名はブランドで変えることがある。GU の期間限定はほぼ全てアプリ会員価格
+// なので、GU では「期間限定(アプリ会員)」と呼ぶ。
+function sectionLabelOf(e) {
+  return e.labelByBrand?.[state.brand] ?? e.label;
+}
 
 function renderCard(product) {
   const { latest, history, offerOver, unconfirmed } = product;
@@ -1618,7 +1624,7 @@ function renderToolbar(rawBucket, bucket, crawl) {
 
   const tabs = [
     { key: "today", label: "今日", count: crawl ? todayChangesOf(bucket, crawl.latestDay).filter((p) => !p.hidden).length : 0 },
-    ...EVENT_TYPE_CONFIG.map((e) => ({ key: e.key, label: e.label, count: countBuyable(bucket[e.key]) })),
+    ...EVENT_TYPE_CONFIG.map((e) => ({ key: e.key, label: sectionLabelOf(e), count: countBuyable(bucket[e.key]) })),
     { key: "trend", label: "曜日の傾向", count: null },
   ];
   sectionTabsEl.innerHTML = "";
@@ -1656,7 +1662,7 @@ function appendSearchResults(container, bucket) {
     const list = Object.values(bucket[e.key] || {}).flat();
     if (list.length === 0) continue;
     total += list.length;
-    appendProductGroup(section, e.label, list, {
+    appendProductGroup(section, sectionLabelOf(e), list, {
       breakdown: e.key === "markdown" || e.key === "limited",
       sortByStage: false,
       open: true,
@@ -1745,7 +1751,7 @@ function renderContent() {
     header.className = "section-header";
     const label = document.createElement("span");
     label.className = "label";
-    label.textContent = eventConfig.label;
+    label.textContent = sectionLabelOf(eventConfig);
     const count = document.createElement("span");
     count.className = "count";
     header.appendChild(label);
