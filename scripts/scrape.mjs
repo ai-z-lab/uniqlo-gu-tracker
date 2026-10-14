@@ -2625,6 +2625,19 @@ async function probeDailyChanges(brand) {
       stats[k].types[t] = (stats[k].types[t] ?? 0) + 1;
     }
   }
+  const firstByDay = {};
+  const firstCrawl = [...crawled].sort()[0];
+  for (const m of byProduct.values()) {
+    const d0 = [...m.keys()].sort()[0];
+    const r0 = m.get(d0);
+    if (d0 === firstCrawl) continue;
+    const k = `${d0.slice(5)}(${wd(d0)})`;
+    firstByDay[k] ??= {};
+    const t = `${r0.event_type}/${r0.price_type}`;
+    firstByDay[k][t] = (firstByDay[k][t] ?? 0) + 1;
+  }
+  const firstLines = Object.keys(firstByDay).sort().map((k) => `${k} ${Object.entries(firstByDay[k]).map(([t, n]) => `${t}:${n}`).join(',')}`);
+  for (let i = 0; i < firstLines.length; i += 10) console.log(`::notice title=${brand} 初登場 ${i / 10 + 1}::${firstLines.slice(i, i + 10).join(' | ')}`);
   const lines = Object.keys(stats).sort().map((k) => `${k.slice(5)}(${wd(k)}) ↓${stats[k].down} ↑${stats[k].up} ${Object.entries(stats[k].types).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([t, n]) => `${t}:${n}`).join(',')}`);
   const missing = [];
   for (let d = [...crawled].sort()[0]; d && d <= [...crawled].sort().at(-1); d = next(d)) if (!crawled.has(d)) missing.push(`${d.slice(5)}(${wd(d)})`);
