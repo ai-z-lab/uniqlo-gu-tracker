@@ -1191,8 +1191,9 @@ async function extractViaApi(source, item, log = () => {}) {
     url,
     name: item?.name ?? productId,
     // 商品自身の区分表記(MEN / WOMEN / 男女兼用 / KIDS / BABY)。どの一覧で
-    // 見つけたかより、商品ページに書いてある区分を正とする。
-    gender: genderFromLabel(item?.genderName),
+    // 見つけたかより、商品ページに書いてある区分を正とする。男女兼用は
+    // サイズ展開(sizeGender)でメンズ/レディースに振り分ける。
+    gender: genderFromItem(item),
     price: priced.price,
     currency: priced.currency,
     listPrice: priced.listPrice,
@@ -1343,6 +1344,20 @@ function genderFromLabel(label) {
   if (t === 'BABY' || t === 'ベビー') return 'baby';
   if (t.includes('男女') || t.includes('ユニセックス') || t === 'UNISEX') return 'unisex';
   return null;
+}
+
+// 男女兼用でも、サイズ展開はメンズかウィメンズのどちらかに寄っている
+// (一覧APIの items[].sizeGender が MEN / WOMEN)。2026-10-14 の実測で、
+// 男女兼用のうち UNIQLO は MEN 84・WOMEN 28・NO_GENDER 10(傘・サングラス等)、
+// GU は MEN 61・WOMEN 18 件。サイズ展開の側の一覧にだけ出すため、そちらの
+// 区分として記録する。NO_GENDER や読めない値は従来どおり 'unisex'(両方に出す)。
+function genderFromItem(item) {
+  const gender = genderFromLabel(item?.genderName);
+  if (gender !== 'unisex') return gender;
+  const sizeGender = String(item?.sizeGender ?? '').trim().toUpperCase();
+  if (sizeGender === 'MEN') return 'men';
+  if (sizeGender === 'WOMEN') return 'women';
+  return gender;
 }
 
 // 同じ商品がメンズとレディースの両方の一覧に載っていたら 'unisex'(男女兼用)。
