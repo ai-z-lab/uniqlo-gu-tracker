@@ -2645,6 +2645,34 @@ async function probeDailyChanges(brand) {
   console.log(`::notice title=${brand} 巡回なしの日::${missing.join(' ') || 'なし'}`);
 }
 
+// 公開ダッシュボードを実際に開き、曜日タブの中身(日付グループと商品)を注記で出す(調査用)。
+// DEBUG_URL に "weekday-ui:gu:6" (ブランド:曜日番号 0=日..6=土)を渡す。
+const WEEKDAY_UI_PREFIX = 'weekday-ui:';
+
+async function probeWeekdayUi(browser, spec) {
+  const [brand, weekday] = spec.split(':');
+  const context = await browser.newContext({ viewport: { width: 420, height: 2000 } });
+  const page = await context.newPage();
+  await page.goto('https://ai-z-lab.github.io/uniqlo-gu-tracker/?v=' + Date.now(), { waitUntil: 'networkidle', timeout: 60000 });
+  await page.waitForSelector('#section-tabs button', { timeout: 60000 });
+  await page.click(`#brand-tabs button[data-brand="${brand}"]`);
+  await page.click('#gender-tabs button[data-gender="all"]');
+  await page.click('#section-tabs button[data-section="trend"]');
+  await page.waitForTimeout(500);
+  await page.click(`button[data-weekday="${weekday}"]`);
+  await page.waitForTimeout(800);
+  const groups = await page.$$eval('#content summary', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim()));
+  console.log(`::notice title=weekday-ui groups::${groups.slice(0, 20).join(' | ')}`);
+  const opened = await page.$$('#content details');
+  if (opened[0]) {
+    if (!(await opened[0].evaluate((d) => d.open))) await opened[0].$eval('summary', (x) => x.click());
+    await page.waitForTimeout(500);
+    const names = await opened[0].$$eval('.row-name, .card-name, td, h3', (xs) => xs.map((x) => x.textContent.trim()).filter(Boolean).slice(0, 24));
+    console.log(`::notice title=weekday-ui first group::${names.join(' / ').slice(0, 900)}`);
+  }
+  await context.close();
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2752,7 +2780,8 @@ async function main() {
       return;
     }
     await withBrowser(async (browser) => {
-      if (token === API_PROBE_TOKEN) await probeApis(browser);
+      if (token.startsWith(WEEKDAY_UI_PREFIX)) await probeWeekdayUi(browser, token.slice(WEEKDAY_UI_PREFIX.length));
+      else if (token === API_PROBE_TOKEN) await probeApis(browser);
       else await debugProducts(browser, DEBUG_URL);
     });
     return;
