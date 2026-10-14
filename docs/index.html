@@ -691,11 +691,10 @@
     .delta.down { color: var(--down); }
     .delta.up { color: var(--up); }
 
-    /* 元値。取り消し線で「これがもう払わなくていい額」だと一目で分かるようにする。 */
+    /* 元値。取り消し線は数字が読みにくいので使わず、「通常」を前に付ける。 */
     .was-price {
       font-size: 0.85rem;
       color: var(--text-muted);
-      text-decoration: line-through;
       font-variant-numeric: tabular-nums;
     }
 
