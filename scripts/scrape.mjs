@@ -2756,6 +2756,31 @@ async function runAudit(browser) {
   await context.close();
 }
 
+// 全ブランド×区分で、曜日タブの並びと棒の値を出す(調査用)。DEBUG_URL に "weekday-all"。
+const WEEKDAY_ALL_TOKEN = 'weekday-all';
+
+async function probeWeekdayAll(browser) {
+  const context = await browser.newContext({ viewport: { width: 420, height: 2000 } });
+  const page = await context.newPage();
+  await page.goto('https://ai-z-lab.github.io/uniqlo-gu-tracker/?v=' + Date.now(), { waitUntil: 'networkidle', timeout: 90000 });
+  await page.waitForSelector('#section-tabs button', { timeout: 90000 });
+  for (const brand of ['uniqlo', 'gu']) {
+    await page.click(`#brand-tabs button[data-brand="${brand}"]`);
+    const genders = await page.$$eval('#gender-tabs button:not([hidden])', (xs) => xs.map((x) => x.dataset.gender));
+    const lines = [];
+    for (const g of genders) {
+      await page.click(`#gender-tabs button[data-gender="${g}"]`);
+      await page.click('#section-tabs button[data-section="trend"]');
+      await page.waitForTimeout(300);
+      const tabs = await page.$$eval('button[data-weekday]', (xs) => xs.map((x) => x.textContent.trim()).filter((t) => t !== 'すべて'));
+      const bars = await page.$$eval('.weekday-rows li', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, '').replace(/値上げ.*$/, '').replace('値下げ', '')));
+      lines.push(`${g}: ${bars.join(' ')} [${tabs.join(',')}]`);
+    }
+    console.log(`::notice title=weekday-all ${brand}::${lines.join(' || ')}`);
+  }
+  await context.close();
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2863,7 +2888,8 @@ async function main() {
       return;
     }
     await withBrowser(async (browser) => {
-      if (token === AUDIT_TOKEN) await runAudit(browser);
+      if (token === WEEKDAY_ALL_TOKEN) await probeWeekdayAll(browser);
+      else if (token === AUDIT_TOKEN) await runAudit(browser);
       else if (token.startsWith(WEEKDAY_UI_PREFIX)) await probeWeekdayUi(browser, token.slice(WEEKDAY_UI_PREFIX.length));
       else if (token === API_PROBE_TOKEN) await probeApis(browser);
       else await debugProducts(browser, DEBUG_URL);
