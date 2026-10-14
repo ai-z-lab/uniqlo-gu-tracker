@@ -2470,7 +2470,7 @@ async function lookupProducts(keyword) {
       else last.to = jst(r.scraped_at);
     }
     const h = hist[hist.length - 1];
-    console.log(`::notice title=${id}::${h.brand} ${h.gender} ${h.product_name} 定価${h.list_price} | ` + steps.map((x) => `${x.type} ¥${x.price} ${x.from}〜${x.to}`).join(' → '));
+    console.log(`::notice title=${id}::${h.brand} ${h.gender} ${h.product_name} 定価${h.list_price} | ` + steps.slice(-4).map((x) => `${x.type} ¥${x.price} ${x.from}〜${x.to}`).join(' → '));
   }
 }
 
@@ -2672,7 +2672,7 @@ async function main() {
       return;
     }
     if (token.startsWith(LOOKUP_PREFIX)) {
-      await lookupProducts(token.slice(LOOKUP_PREFIX.length));
+      for (const kw of token.slice(LOOKUP_PREFIX.length).split('|')) await lookupProducts(kw.trim());
       return;
     }
     if (token === DASHBOARD_PROBE_TOKEN) {
