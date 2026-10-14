@@ -2434,9 +2434,10 @@ async function probeGenderLabels() {
     const counts = {};
     const samples = [];
     for (const item of items) {
-      const label = item?.genderName ?? '(なし)';
+      const label = `${item?.genderName ?? '(なし)'}/${item?.sizeGender ?? item?.sizeGenderName ?? '-'}`;
       counts[label] = (counts[label] ?? 0) + 1;
       if (/ウィンドプルーフ|シェルパーカ/.test(item?.name ?? '')) samples.push(`${item.name}=${label}`);
+      if (!samples.keysLogged && item) { samples.keysLogged = true; samples.push(`keys:${Object.keys(item).filter((k) => /gender|size/i.test(k)).join(',')}`); }
     }
     console.log(`::notice title=${source.id}::${JSON.stringify(counts)} ${samples.slice(0, 3).join(' / ')}`);
   }
