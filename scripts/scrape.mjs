@@ -2650,7 +2650,10 @@ async function probeDailyChanges(brand) {
 const WEEKDAY_UI_PREFIX = 'weekday-ui:';
 
 async function probeWeekdayUi(browser, spec) {
-  const [brand, weekday] = spec.split(':');
+  const parts = spec.split(':');
+  const brand = parts[0];
+  const weekday = parts.at(-1);
+  const gender = parts.length > 2 ? parts[1] : 'all';
   const context = await browser.newContext({ viewport: { width: 420, height: 2000 } });
   const page = await context.newPage();
   await page.goto('https://ai-z-lab.github.io/uniqlo-gu-tracker/?v=' + Date.now(), { waitUntil: 'networkidle', timeout: 60000 });
@@ -2658,7 +2661,7 @@ async function probeWeekdayUi(browser, spec) {
   await page.waitForSelector('#section-tabs button', { timeout: 90000 });
   console.log(`::notice title=weekday-ui load::${Date.now() - loadStart}ms 後に表示`);
   await page.click(`#brand-tabs button[data-brand="${brand}"]`);
-  await page.click('#gender-tabs button[data-gender="all"]');
+  await page.click(`#gender-tabs button[data-gender="${gender}"]`);
   await page.click('#section-tabs button[data-section="trend"]');
   await page.waitForTimeout(500);
   const t0 = Date.now();
@@ -2672,6 +2675,12 @@ async function probeWeekdayUi(browser, spec) {
   const groups = await page.$$eval('#content summary', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim()));
   console.log(`::notice title=weekday-ui groups::${groups.slice(0, 20).join(' | ')}`);
   const opened = await page.$$('#content details');
+  for (const d of opened.slice(1, 4)) {
+    if (!(await d.evaluate((x) => x.open))) await d.$eval('summary', (x) => x.click());
+  }
+  await page.waitForTimeout(400);
+  const all = await page.$$eval('#content details', (ds) => ds.slice(0, 4).map((d) => d.textContent.replace(/\s+/g, ' ').slice(0, 400)));
+  console.log(`::notice title=weekday-ui detail::${all.join(' || ')}`);
   if (opened[0]) {
     if (!(await opened[0].evaluate((d) => d.open))) await opened[0].$eval('summary', (x) => x.click());
     await page.waitForTimeout(500);
