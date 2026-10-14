@@ -2537,6 +2537,54 @@ async function probeSizeLabels(spec) {
   }
 }
 
+// 期間限定の開始曜日と、いま期間限定として出ている件数の内訳を出す(調査用)。
+const LIMITED_STATS_TOKEN = 'limited-stats';
+
+async function probeLimitedStats() {
+  const { SUPABASE_URL: url, SUPABASE_PUBLISHABLE_KEY: key } = await import('../docs/config.js');
+  const since = new Date(Date.now() - 45 * 864e5).toISOString();
+  const rows = [];
+  for (let from = 0; from < 40000; from += 1000) {
+    const res = await fetch(
+      `${url}/rest/v1/price_events?select=product_id,brand,gender,event_type,price_type,price,scraped_at&scraped_at=gte.${since}&order=scraped_at.asc`,
+      { headers: { apikey: key, Authorization: `Bearer ${key}`, Range: `${from}-${from + 999}` } }
+    );
+    const page = await res.json();
+    rows.push(...page);
+    if (page.length < 1000) break;
+  }
+  const jstDay = (iso) => new Date(new Date(iso).getTime() + 9 * 3600e3).toISOString().slice(0, 10);
+  const wd = (d) => '日月火水木金土'[new Date(`${d}T00:00:00Z`).getUTCDay()];
+  const isLimited = (r) => r.event_type === 'limited' || r.event_type === 'first_limited';
+  for (const brand of ['uniqlo', 'gu']) {
+    const byProduct = new Map();
+    for (const r of rows) if (r.brand === brand) (byProduct.get(r.product_id) ?? byProduct.set(r.product_id, []).get(r.product_id)).push(r);
+    const startWd = {};
+    const startWdByType = {};
+    let latestDay = '';
+    for (const r of rows) if (r.brand === brand && jstDay(r.scraped_at) > latestDay) latestDay = jstDay(r.scraped_at);
+    const nowCounts = {};
+    for (const hist of byProduct.values()) {
+      for (let i = 0; i < hist.length; i++) {
+        const r = hist[i], prev = hist[i - 1];
+        if (isLimited(r) && (!prev || !isLimited(prev) || prev.price !== r.price || prev.price_type !== r.price_type)) {
+          const d = wd(jstDay(r.scraped_at));
+          startWd[d] = (startWd[d] ?? 0) + 1;
+          const k = `${r.price_type}:${d}`;
+          startWdByType[k] = (startWdByType[k] ?? 0) + 1;
+        }
+      }
+      const last = hist[hist.length - 1];
+      if (isLimited(last) && jstDay(last.scraped_at) === latestDay) {
+        const k = `${last.gender}/${last.price_type}`;
+        nowCounts[k] = (nowCounts[k] ?? 0) + 1;
+      }
+    }
+    console.log(`::notice title=${brand} 期間限定の開始曜日::${JSON.stringify(startWd)} 種類別:${JSON.stringify(startWdByType)}`);
+    console.log(`::notice title=${brand} いまの期間限定(${latestDay})::${JSON.stringify(nowCounts)}`);
+  }
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2609,6 +2657,10 @@ async function main() {
     const token = DEBUG_URL.trim();
     if (token === DRY_RUN_TOKEN) {
       await dryRunSources(await loadSources());
+      return;
+    }
+    if (token === LIMITED_STATS_TOKEN) {
+      await probeLimitedStats();
       return;
     }
     if (token.startsWith(SIZEPROBE_PREFIX)) {
