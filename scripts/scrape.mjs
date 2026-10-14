@@ -2506,6 +2506,36 @@ async function compareProducts(spec) {
   }
 }
 
+// 商品詳細JSONの中から MEN/WOMEN/メンズ/ウィメンズ を含む項目を洗い出す(調査用)。
+// DEBUG_URL に "sizeprobe:gu:E360872-000,..." を渡す。
+const SIZEPROBE_PREFIX = 'sizeprobe:';
+
+async function probeSizeLabels(spec) {
+  const [brand, ids] = spec.split(':');
+  const origin = brandOrigin(brand);
+  for (const id of ids.split(',')) {
+    const res = await fetch(`${origin}/jp/api/commerce/v5/ja/products/${id}/price-groups/00/details?httpFailure=true`, {
+      headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9', Referer: `${origin}/jp/ja/` },
+    });
+    let body = null;
+    try { body = await res.json(); } catch {}
+    const r = body?.result ?? {};
+    const hits = [];
+    const walk = (o, path) => {
+      if (o == null) return;
+      if (typeof o === 'string') {
+        if (/(^|[^A-Z])(MEN|WOMEN)([^A-Z]|$)|メンズ|ウィメンズ|レディース|男性|女性/i.test(o)) hits.push(`${path}=${o.slice(0, 60)}`);
+        return;
+      }
+      if (typeof o !== 'object') return;
+      for (const [k, v] of Object.entries(o)) walk(v, `${path}.${k}`);
+    };
+    walk(r, '');
+    console.log(`::notice title=${id} ${r.genderName ?? ''}::sizes=${(r.sizes ?? []).map((z) => z.name).join('/')} | ${hits.slice(0, 15).join(' | ')}`);
+    await sleep(REQUEST_DELAY_MS);
+  }
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2578,6 +2608,10 @@ async function main() {
     const token = DEBUG_URL.trim();
     if (token === DRY_RUN_TOKEN) {
       await dryRunSources(await loadSources());
+      return;
+    }
+    if (token.startsWith(SIZEPROBE_PREFIX)) {
+      await probeSizeLabels(token.slice(SIZEPROBE_PREFIX.length));
       return;
     }
     if (token.startsWith(COMPARE_PREFIX)) {
