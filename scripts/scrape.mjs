@@ -1192,7 +1192,10 @@ async function extractViaApi(source, item, log = () => {}) {
     name: item?.name ?? productId,
     // 商品自身の区分表記(MEN / WOMEN / 男女兼用 / KIDS / BABY)。どの一覧で
     // 見つけたかより、商品ページに書いてある区分を正とする。
-    gender: genderFromLabel(item?.genderName),
+    // 男女兼用・ユニセックスはサイズ表記の区分(sizeGender: MEN/WOMEN)で振り分ける。
+    // 例: GU ウィンドプルーフシェルパーカ = ユニセックス / サイズ表記 MEN → メンズ。
+    // サイズ表記にも区分が無い(NO_GENDER)ものだけ男女兼用として両方に出す。
+    gender: resolveItemGender(item?.genderName, item?.sizeGender),
     price: priced.price,
     currency: priced.currency,
     listPrice: priced.listPrice,
@@ -1343,6 +1346,13 @@ function genderFromLabel(label) {
   if (t === 'BABY' || t === 'ベビー') return 'baby';
   if (t.includes('男女') || t.includes('ユニセックス') || t === 'UNISEX') return 'unisex';
   return null;
+}
+
+function resolveItemGender(genderName, sizeGender) {
+  const g = genderFromLabel(genderName);
+  if (g !== 'unisex') return g;
+  const bySize = genderFromLabel(sizeGender);
+  return bySize === 'men' || bySize === 'women' ? bySize : 'unisex';
 }
 
 // 同じ商品がメンズとレディースの両方の一覧に載っていたら 'unisex'(男女兼用)。
