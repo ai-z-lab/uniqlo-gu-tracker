@@ -625,12 +625,13 @@ function priceHistoryTextFor({ isMarkdownFamily, isLimitedFamily, stagePoints, p
 // 定価のまま値下げ・期間限定の一覧に載っている商品。発売前の先出しや、同名の
 // 旧商品(定価が高かった)との取り違えなど、サイト側の掲載ミスの可能性がある。
 // 隠さずに記録・表示を続け、目印を付けて様子を見る。
-function isListedAtListPrice(latest) {
-  return (
-    latest.list_price != null &&
-    latest.price >= latest.list_price &&
-    (MARKDOWN_EVENT_TYPES.has(latest.event_type) || LIMITED_EVENT_TYPES.has(latest.event_type))
-  );
+// サイトが返す「定価」は値下げ後の価格に書き換わっていることがある(例: メリノシルク
+// クルーネックカーディガン ¥6,990→¥5,990 なのに定価も¥5,990)。過去に今より高い価格で
+// 記録していれば値下げは実在するので、目印は付けない。
+function isListedAtListPrice(latest, history = []) {
+  if (latest.list_price == null || latest.price < latest.list_price) return false;
+  if (!(MARKDOWN_EVENT_TYPES.has(latest.event_type) || LIMITED_EVENT_TYPES.has(latest.event_type))) return false;
+  return !history.some((row) => row.price > latest.price);
 }
 const LIST_PRICE_NOTE = "定価のまま掲載(要確認)";
 
@@ -778,7 +779,7 @@ function renderCard(product) {
     card.appendChild(endDate);
   }
 
-  if (isListedAtListPrice(latest)) {
+  if (isListedAtListPrice(latest, history)) {
     const note = document.createElement("div");
     note.className = "unconfirmed-note";
     note.textContent = LIST_PRICE_NOTE;
@@ -952,7 +953,7 @@ function renderTableRow(product) {
   };
   if (offerOver) addNote("終了", "over");
   else if (unconfirmed) addNote(`未確認(最終確認 ${stageDateFormatter.format(new Date(latest.scraped_at))})`, "stale");
-  if (isListedAtListPrice(latest)) addNote(LIST_PRICE_NOTE, "stale");
+  if (isListedAtListPrice(latest, history)) addNote(LIST_PRICE_NOTE, "stale");
   if (latest.price_type === "member") addNote("アプリ会員価格", "member");
   if (latest.price_type === "remarkdown") addNote("再値下げ", "remarkdown");
   const endDateText = formatLimitedPriceEndDate(latest.limited_price_end_date);
