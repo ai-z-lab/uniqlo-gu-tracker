@@ -489,12 +489,11 @@ function weekdayPriceChangeStats(products) {
   // 「初登場」を数えない(切れ目の商品がまとめて新規に見える)。
   const firstCrawlDay = [...crawlDays].filter(Boolean).sort()[0] ?? null;
   const secondCrawlDay = firstCrawlDay ? nextJstDay(firstCrawlDay) : null;
+  const firstsByDay = new Map(); // "YYYY-MM-DD" -> [product](初登場)
 
   for (const product of products) {
-    // 初値下げは「前日まで一覧に無かった商品が、その日値下げ一覧に入った」こと
-    // そのものが値下げ。前日の行が無いので下の前日比較には乗らず、以前は
-    // グラフから丸ごと抜けていた(木曜の緊急値下げはほとんどがこれ)。前日も
-    // 巡回できていて、記録開始日でない場合だけ数える。
+    // 初値下げ(前日まで一覧に無かった商品が、その日値下げ一覧に入った)は前日の行が無く、
+    // 下の前日比較に乗らない。いったん日ごとに集めておき、あとで数えるか決める。
     const first = product.history[0];
     const firstDay = first ? jstDayOf(first.scraped_at) : null;
     if (
@@ -504,15 +503,8 @@ function weekdayPriceChangeStats(products) {
       MARKDOWN_EVENT_TYPES.has(first.event_type) &&
       crawlDays.has(prevJstDay(firstDay))
     ) {
-      const weekday = weekdayIndexOf(firstDay);
-      if (weekday !== null) {
-        const bucket = byWeekday[weekday];
-        bucket.comparisons += 1;
-        bucket.downs += 1;
-        bucket.observedDays.add(firstDay);
-        if (!bucket.downsByDay.has(firstDay)) bucket.downsByDay.set(firstDay, []);
-        bucket.downsByDay.get(firstDay).push(product);
-      }
+      if (!firstsByDay.has(firstDay)) firstsByDay.set(firstDay, []);
+      firstsByDay.get(firstDay).push(product);
     }
 
     const byDay = rowsByJstDay(product.history);
@@ -536,6 +528,22 @@ function weekdayPriceChangeStats(products) {
         bucket.downsByDay.get(day).push(product);
       } else if (diff > 0) bucket.ups += 1;
     }
+  }
+
+  // 初登場を値下げに数えるのは、その日に実際の値下げ(前日比)があるか、初登場が
+  // まとまってある日だけ。一覧から外れた商品が1件戻っただけの日(例: 9/19 土に
+  // パフテックユーティリティジャケットが再掲載)を値下げの日にしない。
+  const FIRSTS_MIN = 3;
+  for (const [day, list] of firstsByDay) {
+    const weekday = weekdayIndexOf(day);
+    if (weekday === null) continue;
+    const bucket = byWeekday[weekday];
+    if (!bucket.downsByDay.has(day) && list.length < FIRSTS_MIN) continue;
+    bucket.comparisons += list.length;
+    bucket.downs += list.length;
+    bucket.observedDays.add(day);
+    if (!bucket.downsByDay.has(day)) bucket.downsByDay.set(day, []);
+    bucket.downsByDay.get(day).push(...list);
   }
 
   return { byWeekday, skippedChanges };
