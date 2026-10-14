@@ -482,13 +482,24 @@ function weekdayPriceChangeStats(products) {
   }));
   let skippedChanges = 0;
 
-  // 巡回した日。初値下げ(前日まで値下げ一覧に無かった商品)を数えるのに使う。
-  const crawlDays = new Set();
-  for (const product of products) for (const row of product.history) crawlDays.add(jstDayOf(row.scraped_at));
-  // 読み込んだ一番古い日とその翌日は、途中で読み込みが切れている可能性があるので
-  // 「初登場」を数えない(切れ目の商品がまとめて新規に見える)。
-  const firstCrawlDay = [...crawlDays].filter(Boolean).sort()[0] ?? null;
-  const secondCrawlDay = firstCrawlDay ? nextJstDay(firstCrawlDay) : null;
+  // 巡回した日を区分(メンズ/キッズ等)ごとに持つ。初値下げを数えるのに使う。
+  // 区分ごとに記録の開始日が違う(キッズは10/9から)ので、ALLでまとめて見たときに
+  // キッズの開始日の商品が全部「新規入り」に見えないよう、区分ごとに判定する。
+  const segmentOf = (product) => product.latest.gender || "unknown";
+  const crawlDaysBySegment = new Map();
+  for (const product of products) {
+    const seg = segmentOf(product);
+    if (!crawlDaysBySegment.has(seg)) crawlDaysBySegment.set(seg, new Set());
+    const set = crawlDaysBySegment.get(seg);
+    for (const row of product.history) set.add(jstDayOf(row.scraped_at));
+  }
+  // 区分ごとの、読み込んだ一番古い日とその翌日。途中で読み込みが切れている
+  // (あるいは記録を始めた日)可能性があるので「初登場」を数えない。
+  const segmentEdge = new Map();
+  for (const [seg, set] of crawlDaysBySegment) {
+    const first = [...set].filter(Boolean).sort()[0] ?? null;
+    segmentEdge.set(seg, new Set([first, first ? nextJstDay(first) : null]));
+  }
   const firstsByDay = new Map(); // "YYYY-MM-DD" -> [product](初登場)
 
   for (const product of products) {
@@ -496,12 +507,12 @@ function weekdayPriceChangeStats(products) {
     // 下の前日比較に乗らない。いったん日ごとに集めておき、あとで数えるか決める。
     const first = product.history[0];
     const firstDay = first ? jstDayOf(first.scraped_at) : null;
+    const seg = segmentOf(product);
     if (
       firstDay &&
-      firstDay !== firstCrawlDay &&
-      firstDay !== secondCrawlDay &&
+      !segmentEdge.get(seg).has(firstDay) &&
       MARKDOWN_EVENT_TYPES.has(first.event_type) &&
-      crawlDays.has(prevJstDay(firstDay))
+      crawlDaysBySegment.get(seg).has(prevJstDay(firstDay))
     ) {
       if (!firstsByDay.has(firstDay)) firstsByDay.set(firstDay, []);
       firstsByDay.get(firstDay).push(product);
@@ -531,9 +542,9 @@ function weekdayPriceChangeStats(products) {
   }
 
   // 初登場を値下げに数えるのは、その日に実際の値下げ(前日比)があるか、初登場が
-  // まとまってある日だけ。一覧から外れた商品が1件戻っただけの日(例: 9/19 土に
-  // パフテックユーティリティジャケットが再掲載)を値下げの日にしない。
-  const FIRSTS_MIN = 3;
+  // まとまってある日だけ。一覧から外れた商品が数件戻っただけの日(例: 9/19 土・
+  // 9/20 日のシルバーウィーク中の再掲載 3件ずつ)を値下げの日にしない。
+  const FIRSTS_MIN = 10;
   for (const [day, list] of firstsByDay) {
     const weekday = weekdayIndexOf(day);
     if (weekday === null) continue;
