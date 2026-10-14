@@ -2681,6 +2681,81 @@ async function probeWeekdayUi(browser, spec) {
   await context.close();
 }
 
+// 公開ダッシュボードと生データの突き合わせ(調査用)。DEBUG_URL に "audit"。
+const AUDIT_TOKEN = 'audit';
+
+async function runAudit(browser) {
+  const { SUPABASE_URL: url, SUPABASE_PUBLISHABLE_KEY: key } = await import('../docs/config.js');
+  const since = new Date(Date.now() - 35 * 864e5).toISOString();
+  const rows = [];
+  for (let from = 0; from < 90000; from += 1000) {
+    const res = await fetch(
+      `${url}/rest/v1/price_events?select=product_id,product_name,brand,gender,category,event_type,price_type,price,list_price,scraped_at&scraped_at=gte.${since}&order=scraped_at.asc`,
+      { headers: { apikey: key, Authorization: `Bearer ${key}`, Range: `${from}-${from + 999}` } }
+    );
+    const page = await res.json();
+    rows.push(...page);
+    if (page.length < 1000) break;
+  }
+  const out = (title, msg) => console.log(`::notice title=${title}::${msg}`.slice(0, 3800));
+  out('audit 行数', `${rows.length}行(35日)`);
+  const jstDay = (iso) => new Date(new Date(iso).getTime() + 9 * 3600e3).toISOString().slice(0, 10);
+  const next = (d) => new Date(new Date(`${d}T00:00:00Z`).getTime() + 864e5).toISOString().slice(0, 10);
+  const W = '日月火水木金土';
+  const context = await browser.newContext({ viewport: { width: 420, height: 2000 } });
+  const page = await context.newPage();
+  await page.goto('https://ai-z-lab.github.io/uniqlo-gu-tracker/?v=' + Date.now(), { waitUntil: 'networkidle', timeout: 90000 });
+  await page.waitForSelector('#section-tabs button', { timeout: 90000 });
+
+  for (const brand of ['uniqlo', 'gu']) {
+    const br = rows.filter((r) => r.brand === brand);
+    const byProduct = new Map();
+    for (const r of br) (byProduct.get(r.product_id) ?? byProduct.set(r.product_id, []).get(r.product_id)).push(r);
+    const days = [...new Set(br.map((r) => jstDay(r.scraped_at)))].sort();
+    const d0 = days[0], d1 = next(d0), latestDay = days.at(-1);
+    const crawled = new Set(days);
+    // 曜日別の値下げ(前日比 + 初登場)
+    const wd = Array(7).fill(0);
+    for (const hist of byProduct.values()) {
+      const m = new Map(hist.map((r) => [jstDay(r.scraped_at), r]));
+      const ds = [...m.keys()].sort();
+      const f = ds[0], fr = m.get(f);
+      if (f !== d0 && f !== d1 && crawled.has(new Date(new Date(`${f}T00:00:00Z`).getTime() - 864e5).toISOString().slice(0, 10)) && /markdown/.test(fr.event_type)) wd[new Date(`${f}T00:00:00Z`).getUTCDay()]++;
+      for (let i = 1; i < ds.length; i++) if (next(ds[i - 1]) === ds[i] && m.get(ds[i]).price < m.get(ds[i - 1]).price) wd[new Date(`${ds[i]}T00:00:00Z`).getUTCDay()]++;
+    }
+    // 最新日の一覧
+    const latest = [...byProduct.values()].map((h) => h[h.length - 1]).filter((r) => jstDay(r.scraped_at) === latestDay);
+    const isMember = (r) => r.price_type === 'member' && /limited/.test(r.event_type);
+    const higher = (r) => byProduct.get(r.product_id).some((x) => x.price > r.price);
+    const atList = (r) => r.list_price != null && r.price >= r.list_price && !higher(r);
+    const counts = {
+      期間限定: latest.filter((r) => /limited/.test(r.event_type) && !isMember(r)).length,
+      会員: latest.filter((r) => isMember(r) && !atList(r)).length,
+      会員まとめ買い除外: latest.filter((r) => isMember(r) && atList(r)).length,
+      値下げ系: latest.filter((r) => /markdown/.test(r.event_type)).length,
+      定価のまま: latest.filter((r) => atList(r) && !isMember(r)).length,
+    };
+    const genders = {};
+    for (const r of latest) genders[r.gender] = (genders[r.gender] ?? 0) + 1;
+    out(`${brand} 生データ`, `最新日${latestDay} 曜日別値下げ ${W.split('').map((w, i) => `${w}${wd[i]}`).join(' ')} | 件数 ${JSON.stringify(counts)} | 区分 ${JSON.stringify(genders)}`);
+    // 分類漏れ候補(その他/グッズ・その他)
+    const other = latest.filter((r) => /その他/.test(r.category ?? '')).map((r) => r.product_name);
+    out(`${brand} その他に入った商品(${other.length})`, [...new Set(other)].slice(0, 40).join(' / '));
+    const atListNames = latest.filter((r) => atList(r) && !isMember(r)).map((r) => `${r.product_name}¥${r.price}`);
+    out(`${brand} 定価のまま掲載(${atListNames.length})`, [...new Set(atListNames)].slice(0, 25).join(' / '));
+    // UI
+    await page.click(`#brand-tabs button[data-brand="${brand}"]`);
+    await page.click('#gender-tabs button[data-gender="all"]');
+    await page.waitForTimeout(400);
+    const tabs = await page.$$eval('#section-tabs button', (xs) => xs.map((x) => x.textContent.trim()));
+    await page.click('#section-tabs button[data-section="trend"]');
+    await page.waitForTimeout(400);
+    const bars = await page.$$eval('.weekday-rows li', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, '').replace(/値上げ.*$/, '')));
+    out(`${brand} 画面`, `タブ ${tabs.join(' / ')} | 曜日 ${bars.join(' ')}`);
+  }
+  await context.close();
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2788,7 +2863,8 @@ async function main() {
       return;
     }
     await withBrowser(async (browser) => {
-      if (token.startsWith(WEEKDAY_UI_PREFIX)) await probeWeekdayUi(browser, token.slice(WEEKDAY_UI_PREFIX.length));
+      if (token === AUDIT_TOKEN) await runAudit(browser);
+      else if (token.startsWith(WEEKDAY_UI_PREFIX)) await probeWeekdayUi(browser, token.slice(WEEKDAY_UI_PREFIX.length));
       else if (token === API_PROBE_TOKEN) await probeApis(browser);
       else await debugProducts(browser, DEBUG_URL);
     });
