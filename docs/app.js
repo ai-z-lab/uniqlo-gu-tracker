@@ -629,9 +629,9 @@ function priceHistoryTextFor({ isMarkdownFamily, isLimitedFamily, stagePoints, p
   return points.length > 1 ? formatMarkdownStageHistory(points) : null;
 }
 
-// 定価のまま値下げ・期間限定の一覧に載っている商品。発売前の先出しや、同名の
-// 旧商品(定価が高かった)との取り違えなど、サイト側の掲載ミスの可能性がある。
-// 隠さずに記録・表示を続け、目印を付けて様子を見る。
+// 定価のまま一覧に載っている商品か。値下げ品はサイトの「定価」欄自体が値下げ後の
+// 価格になっていることが多く(点検で UNIQLO 402件・GU 259件が該当)、値下げ品の目印には
+// 使えない。GU のアプリ会員まとめ買い(1点は定価のまま)を会員価格から外す判定にだけ使う。
 // サイトが返す「定価」は値下げ後の価格に書き換わっていることがある(例: メリノシルク
 // クルーネックカーディガン ¥6,990→¥5,990 なのに定価も¥5,990)。過去に今より高い価格で
 // 記録していれば値下げは実在するので、目印は付けない。
@@ -640,7 +640,6 @@ function isListedAtListPrice(latest, history = []) {
   if (!(MARKDOWN_EVENT_TYPES.has(latest.event_type) || LIMITED_EVENT_TYPES.has(latest.event_type))) return false;
   return !history.some((row) => row.price > latest.price);
 }
-const LIST_PRICE_NOTE = "定価のまま掲載(要確認)";
 
 // セクション名はブランドで変えることがある。GU の期間限定はほぼ全てアプリ会員価格
 // なので、GU では「期間限定(アプリ会員)」と呼ぶ。
@@ -717,7 +716,7 @@ function renderCard(product) {
   if (latest.list_price != null && latest.list_price > latest.price) {
     const wasPrice = document.createElement("span");
     wasPrice.className = "was-price";
-    wasPrice.textContent = fmt.format(latest.list_price);
+    wasPrice.textContent = `通常 ${fmt.format(latest.list_price)}`;
     priceRow.appendChild(wasPrice);
 
     const off = document.createElement("span");
@@ -790,13 +789,6 @@ function renderCard(product) {
     endDate.className = `end-date${offerOver ? " over" : ""}`;
     endDate.textContent = offerOver ? `${endDateText}(終了)` : endDateText;
     card.appendChild(endDate);
-  }
-
-  if (isListedAtListPrice(latest, history)) {
-    const note = document.createElement("div");
-    note.className = "unconfirmed-note";
-    note.textContent = LIST_PRICE_NOTE;
-    card.appendChild(note);
   }
 
   if (unconfirmed) {
@@ -966,7 +958,6 @@ function renderTableRow(product) {
   };
   if (offerOver) addNote("終了", "over");
   else if (unconfirmed) addNote(`未確認(最終確認 ${stageDateFormatter.format(new Date(latest.scraped_at))})`, "stale");
-  if (isListedAtListPrice(latest, history)) addNote(LIST_PRICE_NOTE, "stale");
   if (latest.price_type === "member") addNote("アプリ会員価格", "member");
   if (latest.price_type === "remarkdown") addNote("再値下げ", "remarkdown");
   const endDateText = formatLimitedPriceEndDate(latest.limited_price_end_date);
@@ -989,7 +980,7 @@ function renderTableRow(product) {
     was.className = "row-was";
     const wasPrice = document.createElement("span");
     wasPrice.className = "was-price";
-    wasPrice.textContent = fmt.format(latest.list_price);
+    wasPrice.textContent = `通常 ${fmt.format(latest.list_price)}`;
     const off = document.createElement("span");
     off.className = "discount";
     off.textContent = `${Math.round((1 - latest.price / latest.list_price) * 100)}%OFF`;
