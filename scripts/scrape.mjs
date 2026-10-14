@@ -2585,6 +2585,53 @@ async function probeLimitedStats() {
   }
 }
 
+// ブランドごと・日付ごとに「前日から下がった/上がった」件数と、その時の価格の種類を出す(調査用)。
+const DAILY_CHANGES_PREFIX = 'daily-changes:';
+
+async function probeDailyChanges(brand) {
+  const { SUPABASE_URL: url, SUPABASE_PUBLISHABLE_KEY: key } = await import('../docs/config.js');
+  const since = new Date(Date.now() - 40 * 864e5).toISOString();
+  const rows = [];
+  for (let from = 0; from < 40000; from += 1000) {
+    const res = await fetch(
+      `${url}/rest/v1/price_events?select=product_id,event_type,price_type,price,scraped_at&brand=eq.${brand}&scraped_at=gte.${since}&order=scraped_at.asc`,
+      { headers: { apikey: key, Authorization: `Bearer ${key}`, Range: `${from}-${from + 999}` } }
+    );
+    const page = await res.json();
+    rows.push(...page);
+    if (page.length < 1000) break;
+  }
+  const jstDay = (iso) => new Date(new Date(iso).getTime() + 9 * 3600e3).toISOString().slice(0, 10);
+  const next = (d) => new Date(new Date(`${d}T00:00:00Z`).getTime() + 864e5).toISOString().slice(0, 10);
+  const wd = (d) => '日月火水木金土'[new Date(`${d}T00:00:00Z`).getUTCDay()];
+  const byProduct = new Map();
+  for (const r of rows) {
+    const m = byProduct.get(r.product_id) ?? byProduct.set(r.product_id, new Map()).get(r.product_id);
+    m.set(jstDay(r.scraped_at), r);
+  }
+  const crawled = new Set(rows.map((r) => jstDay(r.scraped_at)));
+  const stats = {};
+  for (const m of byProduct.values()) {
+    const days = [...m.keys()].sort();
+    for (let i = 1; i < days.length; i++) {
+      if (next(days[i - 1]) !== days[i]) continue;
+      const a = m.get(days[i - 1]), b = m.get(days[i]);
+      const d = b.price - a.price;
+      if (d === 0) continue;
+      const k = days[i];
+      stats[k] ??= { down: 0, up: 0, types: {} };
+      if (d < 0) stats[k].down++; else stats[k].up++;
+      const t = `${a.price_type}->${b.price_type}${d < 0 ? '↓' : '↑'}`;
+      stats[k].types[t] = (stats[k].types[t] ?? 0) + 1;
+    }
+  }
+  const lines = Object.keys(stats).sort().map((k) => `${k.slice(5)}(${wd(k)}) ↓${stats[k].down} ↑${stats[k].up} ${Object.entries(stats[k].types).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([t, n]) => `${t}:${n}`).join(',')}`);
+  const missing = [];
+  for (let d = [...crawled].sort()[0]; d && d <= [...crawled].sort().at(-1); d = next(d)) if (!crawled.has(d)) missing.push(`${d.slice(5)}(${wd(d)})`);
+  for (let i = 0; i < lines.length; i += 8) console.log(`::notice title=${brand} 日別 ${i / 8 + 1}::${lines.slice(i, i + 8).join(' | ')}`);
+  console.log(`::notice title=${brand} 巡回なしの日::${missing.join(' ') || 'なし'}`);
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2657,6 +2704,10 @@ async function main() {
     const token = DEBUG_URL.trim();
     if (token === DRY_RUN_TOKEN) {
       await dryRunSources(await loadSources());
+      return;
+    }
+    if (token.startsWith(DAILY_CHANGES_PREFIX)) {
+      await probeDailyChanges(token.slice(DAILY_CHANGES_PREFIX.length));
       return;
     }
     if (token === LIMITED_STATS_TOKEN) {
