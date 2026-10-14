@@ -2654,13 +2654,21 @@ async function probeWeekdayUi(browser, spec) {
   const context = await browser.newContext({ viewport: { width: 420, height: 2000 } });
   const page = await context.newPage();
   await page.goto('https://ai-z-lab.github.io/uniqlo-gu-tracker/?v=' + Date.now(), { waitUntil: 'networkidle', timeout: 60000 });
-  await page.waitForSelector('#section-tabs button', { timeout: 60000 });
+  const loadStart = Date.now();
+  await page.waitForSelector('#section-tabs button', { timeout: 90000 });
+  console.log(`::notice title=weekday-ui load::${Date.now() - loadStart}ms 後に表示`);
   await page.click(`#brand-tabs button[data-brand="${brand}"]`);
   await page.click('#gender-tabs button[data-gender="all"]');
   await page.click('#section-tabs button[data-section="trend"]');
   await page.waitForTimeout(500);
-  await page.click(`button[data-weekday="${weekday}"]`);
-  await page.waitForTimeout(800);
+  const t0 = Date.now();
+  const bars = await page.$$eval('.weekday-rows li', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim()));
+  const tabs = await page.$$eval('button[data-weekday]', (xs) => xs.map((x) => x.textContent.trim()));
+  console.log(`::notice title=weekday-ui bars::${bars.join(' | ')} || tabs: ${tabs.join(' / ')}`);
+  const btn = await page.$(`button[data-weekday="${weekday}"]`);
+  if (!btn) { console.log(`::notice title=weekday-ui::曜日${weekday}のタブなし`); await context.close(); return; }
+  await btn.click();
+  await page.waitForTimeout(800 + 0 * t0);
   const groups = await page.$$eval('#content summary', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim()));
   console.log(`::notice title=weekday-ui groups::${groups.slice(0, 20).join(' | ')}`);
   const opened = await page.$$('#content details');
