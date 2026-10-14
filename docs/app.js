@@ -30,6 +30,9 @@ const BRAND_CONFIG = {
 const EVENT_TYPE_CONFIG = [
   { key: "limited", label: "期間限定" },
   { key: "first_limited", label: "初期間限定" },
+  // GU のアプリ会員特別価格。期間限定の一覧にも載るが、別の値引き(月曜・金曜に
+  // 入れ替わる)なので期間限定とは分ける。混ぜると期間限定の件数が実態の数倍になる。
+  { key: "member", label: "アプリ会員価格" },
   { key: "markdown", label: "値下げ" },
   { key: "first_markdown", label: "初値下げ" },
   { key: "price_up", label: "値上げ" },
@@ -53,6 +56,10 @@ const DATE_AXIS = {
   limited: (p) => {
     const periods = limitedPeriods(p.history);
     return periods.length ? periods[periods.length - 1].to : null;
+  },
+  member: (p) => {
+    const periods = limitedPeriods(p.history);
+    return periods.length ? periods[periods.length - 1].from : null;
   },
   price_up: (p) => {
     const points = priceStagePoints(p.history, null);
@@ -79,7 +86,7 @@ const DAY_BUCKET = {
 
 // 開いた直後に直近の日付(期間限定は直近の週)で絞り込むセクション。値上げだけは
 // 件数が少なく、日付で切るより全部を並べた方が早い。
-const DEFAULT_TO_LATEST_DATE = new Set(["markdown", "first_markdown", "first_limited", "limited"]);
+const DEFAULT_TO_LATEST_DATE = new Set(["markdown", "first_markdown", "first_limited", "limited", "member"]);
 
 // 日付で絞り込んだとき、この件数までのグループは開いた状態で出す。1日ぶんは
 // たいてい数件〜数十件で、そこで一段開かせるのはただの手間。
@@ -555,7 +562,9 @@ function buildIndex(rows) {
     const hidden = offerOver || soldOut;
     const brand = latest.brand;
     const gender = latest.gender || "unknown";
-    const eventType = latest.event_type || "markdown";
+    const rawEventType = latest.event_type || "markdown";
+    // 期間限定として記録されていても、価格の種類が会員価格なら別セクションへ。
+    const eventType = LIMITED_EVENT_TYPES.has(rawEventType) && latest.price_type === "member" ? "member" : rawEventType;
     const category = latest.category || (brand === "gu" ? "グッズ・その他" : "その他");
 
     idx[brand] ??= {};
@@ -1495,7 +1504,7 @@ function appendWeekdaySummary(container, products) {
 // いなければ、最新の巡回日の分を出し、そう分かる見出しにする。
 function changedOnDay(product, key, day) {
   if (product.hidden) return false;
-  if (key === "limited" || key === "first_limited") {
+  if (key === "limited" || key === "first_limited" || key === "member") {
     const periods = limitedPeriods(product.history);
     const current = periods[periods.length - 1];
     return Boolean(current) && jstDayOf(current.from) === day;
