@@ -2475,7 +2475,8 @@ const UNISEX_SIZE_PROBE_TOKEN = 'unisex-size-probe';
 async function probeUnisexSizes() {
   const sources = (await loadSources()).filter((s) => s.gender === 'men' || s.gender === 'women');
   const seen = new Set();
-  const perBrand = {};
+  const counts = {};
+  const samples = {};
   for (const source of sources) {
     const { items } = await discoverProductsViaApi(source);
     for (const item of items) {
@@ -2483,26 +2484,15 @@ async function probeUnisexSizes() {
       const key = `${source.brand}-${item.productId}-${item.priceGroup}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      perBrand[source.brand] = (perBrand[source.brand] ?? 0) + 1;
-      if (perBrand[source.brand] > 12) continue;
-      const origin = brandOrigin(source.brand);
-      const sizeKeys = Object.keys(item ?? {}).filter((k) => /size|gender|sex/i.test(k));
-      const itemSizes = Object.fromEntries(sizeKeys.map((k) => [k, item[k]]));
-      const l2s = await getL2s(origin, item.productId, item.priceGroup ?? '00', listingPageUrl(source.brand));
-      const sizes = new Map();
-      for (const l2 of l2s.body?.result?.l2s ?? []) {
-        const sz = l2?.size ?? {};
-        sizes.set(sz.displayCode ?? sz.code, sz);
-      }
-      const l2SizeSample = [...sizes.values()].slice(0, 8);
-      console.log(
-        `::notice title=unisex ${source.brand} ${item.productId}::${item.name} [${source.id}] ` +
-          `item=${JSON.stringify(itemSizes).slice(0, 900)} l2size=${JSON.stringify(l2SizeSample).slice(0, 1500)}`
-      );
-      await sleep(REQUEST_DELAY_MS);
+      const bucket = `${source.brand} ${item?.genderName}/${item?.genderCategory ?? '-'} sizeGender=${item?.sizeGender ?? '(なし)'}`;
+      counts[bucket] = (counts[bucket] ?? 0) + 1;
+      (samples[bucket] ??= []).push(`${item.name}(${(item.sizes ?? []).map((sz) => sz.name).join('/')})`);
     }
   }
-  console.log(`::notice title=unisex-size-probe totals::${JSON.stringify(perBrand)}`);
+  for (const [bucket, n] of Object.entries(counts)) {
+    console.log(`::notice title=${bucket}::${n}件 例: ${samples[bucket].slice(0, 4).join(' | ')}`);
+  }
+  if (Object.keys(counts).length === 0) console.log('::notice title=unisex-size-probe::no unisex items');
 }
 
 const DRY_RUN_TOKEN = 'dry-run';
