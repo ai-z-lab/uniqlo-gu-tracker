@@ -2790,6 +2790,15 @@ async function probeWeekdayAll(browser) {
   await context.close();
 }
 
+const PRICE_UPS_TOKEN = 'price-ups';
+async function probePriceUps() {
+  const { SUPABASE_URL: url, SUPABASE_PUBLISHABLE_KEY: key } = await import('../docs/config.js');
+  const since = new Date(Date.now() - 2 * 864e5).toISOString();
+  const res = await fetch(`${url}/rest/v1/price_events?select=brand,product_name,price,list_price,scraped_at&event_type=eq.price_up&scraped_at=gte.${since}&order=scraped_at.desc&limit=200`, { headers: { apikey: key, Authorization: `Bearer ${key}` } });
+  const rows = await res.json();
+  console.log(`::notice title=price-ups::${rows.length}件 ${rows.slice(0, 30).map((r) => `${r.brand} ${r.product_name} ¥${r.price}(定価${r.list_price}) ${r.scraped_at.slice(5, 16)}`).join(' / ')}`);
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2862,6 +2871,10 @@ async function main() {
     const token = DEBUG_URL.trim();
     if (token === DRY_RUN_TOKEN) {
       await dryRunSources(await loadSources());
+      return;
+    }
+    if (token === PRICE_UPS_TOKEN) {
+      await probePriceUps();
       return;
     }
     if (token.startsWith(DAILY_CHANGES_PREFIX)) {
