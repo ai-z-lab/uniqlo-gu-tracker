@@ -1252,26 +1252,33 @@ async function revisitKnownProducts(productRunState) {
       .range(from, from + 999);
     if (error) throw error;
     for (const r of data) {
-      const k = known.get(r.product_id) ?? { latest: r, maxPrice: 0 };
+      const k = known.get(r.product_id) ?? { latest: r, maxPrice: 0, trustedList: null };
       k.latest = r;
       k.maxPrice = Math.max(k.maxPrice, r.price ?? 0, r.list_price ?? 0);
+      // 定価として信用できるのは、その時の価格より高い定価が付いていた行だけ
+      // (期間限定・会員価格)。値下げ品はサイトの定価欄が値下げ後の価格に
+      // 書き換わっていて、元の価格に戻っただけでも値上げに見えてしまう。
+      if (r.list_price != null && r.price != null && r.list_price > r.price) {
+        k.trustedList = Math.max(k.trustedList ?? 0, r.list_price);
+      }
       known.set(r.product_id, k);
     }
     if (data.length < 1000) break;
   }
 
-  const candidates = [...known.entries()].filter(([id]) => !productRunState.has(id));
+  const candidates = [...known.entries()].filter(([id, k]) => !productRunState.has(id) && k.trustedList != null);
   console.log(`[revisit] 一覧外の既知商品 ${candidates.length}件を確認`);
   let ups = 0;
   let failed = 0;
-  const results = await mapWithConcurrency(candidates, L2S_CONCURRENCY, async ([productId, { latest, maxPrice }]) => {
+  const results = await mapWithConcurrency(candidates, L2S_CONCURRENCY, async ([productId, { latest, maxPrice, trustedList }]) => {
     const m = String(latest.url ?? '').match(/\/products\/([A-Za-z0-9-]+)(?:\/(\d{1,3}))?/);
     if (!m) return null;
     const source = { brand: latest.brand, api: { flagCodes: [] } };
     const extracted = await extractViaApi(source, { productId: m[1], priceGroup: m[2] ?? '00', name: latest.product_name });
     if (!extracted || extracted.price == null) return null;
     const discounted = extracted.listPrice != null && extracted.price < extracted.listPrice;
-    if (discounted || extracted.price <= maxPrice) return null;
+    // 本当の定価(trustedList)より高く、これまで記録したどの価格よりも高いときだけ値上げ。
+    if (discounted || extracted.price <= trustedList || extracted.price <= maxPrice) return null;
     const row = {
       product_id: productId,
       product_name: latest.product_name,
@@ -1291,7 +1298,7 @@ async function revisitKnownProducts(productRunState) {
     };
     const { error } = await supabase.from('price_events').insert(row);
     if (error) throw error;
-    console.log(`::notice title=revisit 値上げ::${latest.brand} ${latest.product_name} ¥${maxPrice} → ¥${extracted.price}`);
+    console.log(`::notice title=revisit 値上げ::${latest.brand} ${latest.product_name} 定価¥${trustedList} → ¥${extracted.price}`);
     return true;
   });
   for (const r of results) {
@@ -1300,6 +1307,22 @@ async function revisitKnownProducts(productRunState) {
   }
   // 実行ログが読めない環境からでも結果を確認できるよう、注記でも出す。
   console.log(`::notice title=revisit::一覧外の既知商品 ${candidates.length}件を確認、値上げ ${ups}件、失敗 ${failed}件`);
+}
+
+// テスト実行(2026-10-20 04:16 JST)で誤って記録した price_up を消す。一度きりの掃除用。
+// revisit が書いた行は price_type が null なので、それで本体の price_up と区別する。
+const CLEANUP_REVISIT_TOKEN = 'cleanup-revisit-20261020';
+async function cleanupRevisitTestRows() {
+  const { data, error } = await supabase
+    .from('price_events')
+    .delete()
+    .eq('event_type', 'price_up')
+    .is('price_type', null)
+    .gte('scraped_at', '2026-10-19T19:00:00Z')
+    .lte('scraped_at', '2026-10-19T19:50:00Z')
+    .select('id');
+  if (error) throw error;
+  console.log(`::notice title=cleanup-revisit::${data.length}行を削除`);
 }
 
 // --- Recording price events ---
@@ -2620,6 +2643,10 @@ async function loadSources() {
 async function main() {
   if (DEBUG_URL) {
     const token = DEBUG_URL.trim();
+    if (token === CLEANUP_REVISIT_TOKEN) {
+      await cleanupRevisitTestRows();
+      return;
+    }
     if (token === DRY_RUN_TOKEN) {
       await dryRunSources(await loadSources());
       return;
