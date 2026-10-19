@@ -1291,14 +1291,15 @@ async function revisitKnownProducts(productRunState) {
     };
     const { error } = await supabase.from('price_events').insert(row);
     if (error) throw error;
-    console.log(`[revisit] 値上げ ${latest.product_name} ¥${maxPrice} → ¥${extracted.price}`);
+    console.log(`::notice title=revisit 値上げ::${latest.brand} ${latest.product_name} ¥${maxPrice} → ¥${extracted.price}`);
     return true;
   });
   for (const r of results) {
     if (!r.ok) failed++;
     else if (r.value) ups++;
   }
-  console.log(`[revisit] 値上げ ${ups}件, 失敗 ${failed}件`);
+  // 実行ログが読めない環境からでも結果を確認できるよう、注記でも出す。
+  console.log(`::notice title=revisit::一覧外の既知商品 ${candidates.length}件を確認、値上げ ${ups}件、失敗 ${failed}件`);
 }
 
 // --- Recording price events ---
