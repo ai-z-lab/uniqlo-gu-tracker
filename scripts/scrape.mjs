@@ -1145,6 +1145,85 @@ function pickPriceFlag(body, accept, log) {
   return null;
 }
 
+// 値引きが一部の色・サイズだけに付いているとき、その範囲を返す。全部が対象なら null。
+//
+// 記録する価格は「いちばん安く買えるSKU」の価格なので、色限定・サイズ限定の
+// 値引き(例: フルジップカーディガンの一部の色だけ期間限定、オンライン限定サイズ
+// だけ値下げ)でも、カードには値引き後の価格だけが出て、自分の欲しい色やサイズが
+// その価格なのかが分からなかった。
+//
+// 対象かどうかはSKUごとに「記録した価格で買える」か「同じ値引きフラグが付いて
+// いる」かで決める(フラグが読めない商品は判定しない)。フラグも見るのは、大きいサイズだけ定価が高い商品で、
+// 大きいサイズも同じく値引きされているのに対象外と出さないため。
+// 在庫切れのSKUは数えない — 買えない色まで「対象外」として並べても意味がない。
+// 名前は一覧APIの colors/sizes から引く(l2s 側は表示コードしか持っていない)。
+function variantScopeFromL2s(body, recordedPrice, flagCode, item) {
+  const l2s = body?.result?.l2s;
+  const prices = body?.result?.prices ?? {};
+  const stocks = body?.result?.stocks ?? {};
+  if (!Array.isArray(l2s) || l2s.length < 2 || recordedPrice == null) return null;
+  // 値引きフラグが1つも読めない商品は判定しない。価格だけで決めると、大きい
+  // サイズだけ定価が高い商品で「小さいサイズだけが対象」と誤って出てしまう。
+  if (!flagCode) return null;
+
+  const colorNames = new Map((item?.colors ?? []).map((c) => [c?.displayCode, c?.name || c?.displayCode]));
+  const sizeNames = new Map((item?.sizes ?? []).map((s) => [s?.displayCode, s?.name || s?.displayCode]));
+  const colorOrder = [...colorNames.keys()];
+  const sizeOrder = [...sizeNames.keys()];
+  const byOrder = (order) => (a, b) => {
+    const ia = order.indexOf(a);
+    const ib = order.indexOf(b);
+    return (ia < 0 ? 1e9 : ia) - (ib < 0 ? 1e9 : ib) || String(a).localeCompare(String(b));
+  };
+
+  const colors = new Map(); // colorCode -> { all: Set<sizeCode>, offer: Set<sizeCode> }
+  for (const l2 of l2s) {
+    const colorCode = l2?.color?.displayCode;
+    const sizeCode = l2?.size?.displayCode ?? '';
+    if (!colorCode) continue;
+    if (stocks[l2?.l2Id]?.statusCode === 'STOCK_OUT') continue;
+    const values = priceValuesFromPriceEntry(prices[l2?.l2Id]);
+    if (values.length === 0) continue;
+    const lowest = Math.min(...values.map((v) => v.price));
+    const flagged = Boolean(flagCode) && (l2?.flags?.priceFlags ?? []).some((f) => f?.code === flagCode);
+    const entry = colors.get(colorCode) ?? { all: new Set(), offer: new Set() };
+    entry.all.add(sizeCode);
+    if (lowest === recordedPrice || flagged) entry.offer.add(sizeCode);
+    colors.set(colorCode, entry);
+  }
+
+  const allColors = [...colors.keys()].sort(byOrder(colorOrder));
+  const offerColors = allColors.filter((c) => colors.get(c).offer.size > 0);
+  if (offerColors.length === 0) return null;
+  const isFull = (c) => colors.get(c).offer.size === colors.get(c).all.size;
+  if (offerColors.length === allColors.length && offerColors.every(isFull)) return null;
+
+  const colorName = (c) => colorNames.get(c) ?? c;
+  const sizeList = (set) => [...set].filter((s) => s !== '').sort(byOrder(sizeOrder)).map((s) => sizeNames.get(s) ?? s);
+  const allSizeCount = new Set(allColors.flatMap((c) => [...colors.get(c).all])).size;
+  const scope = {
+    colors: offerColors.length < allColors.length ? offerColors.map(colorName) : null,
+    sizes: null,
+    detail: null,
+    total_colors: allColors.length,
+    total_sizes: allSizeCount,
+  };
+
+  if (offerColors.every(isFull)) return scope; // 色だけの限定
+
+  // 対象の色すべてで、対象サイズの組み合わせが同じならサイズだけで言える。
+  const signature = (c) => sizeList(colors.get(c).offer).join('\u0000');
+  if (offerColors.every((c) => signature(c) === signature(offerColors[0]))) {
+    scope.sizes = sizeList(colors.get(offerColors[0]).offer);
+    return scope;
+  }
+
+  // 色ごとに対象サイズが違う。null は「その色は全サイズ」。
+  scope.colors = null;
+  scope.detail = offerColors.map((c) => ({ color: colorName(c), sizes: isFull(c) ? null : sizeList(colors.get(c).offer) }));
+  return scope;
+}
+
 // 商品1件ぶんを、一覧APIの項目と l2s API のレスポンスだけから組み立てる。
 // 返す形は renderAndExtract と同じなので、記録側は変えずに済む。
 async function extractViaApi(source, item, log = () => {}) {
@@ -1186,6 +1265,13 @@ async function extractViaApi(source, item, log = () => {}) {
   // 記録した金額が会員価格なら値下げとは呼べない。棚の種類は event_type が持つ。
   // フラグも読めなければ通常値下げとして扱う。
   const priceType = priced.priceLabel?.startsWith('member.') ? 'member' : flag?.priceType ?? 'markdown';
+  let variantScope = null;
+  try {
+    variantScope = variantScopeFromL2s(body, priced.price, flag?.code ?? null, item);
+  } catch (err) {
+    // 範囲の判定は付け足しの情報。これで価格の記録まで落とさない。
+    log(`    variant scope failed for ${productId}/${priceGroup}: ${err.message}`);
+  }
 
   return {
     url,
@@ -1203,6 +1289,7 @@ async function extractViaApi(source, item, log = () => {}) {
     priceFlagName: flag?.name ?? null,
     stockStatus: priced.stockStatus,
     inStockSizeCount: priced.inStockSizeCount,
+    variantScope,
     // 終了日は price_type とは独立に残す。会員価格が期間限定より安くて
     // price_type が 'member' になっても、その値引きに終わりがあることは
     // 変わらないため。
@@ -1470,6 +1557,13 @@ function isGenderCheckViolation(error) {
   return error && error.code === '23514' && String(error.message ?? '').includes('gender');
 }
 
+let variantScopeColumnMissing = false;
+function isMissingVariantScopeColumn(error) {
+  if (!error) return false;
+  const text = `${error.code ?? ''} ${error.message ?? ''}`;
+  return /variant_scope/.test(text) && /(PGRST204|42703|column)/i.test(text);
+}
+
 async function recordExtractedProduct(extracted, source, productRunState) {
   const url = extracted.url;
   const productId = productIdFromUrl(url, source.brand);
@@ -1557,14 +1651,27 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     limited_price_end_date: extracted.limitedPriceEndDate ?? null,
     scraped_at: nowIso,
   };
+  if (!variantScopeColumnMissing) row.variant_scope = extracted.variantScope ?? null;
 
-  const writeRow = async (r) => {
+  const writeRowOnce = async (r) => {
     if (existingRowId) {
       const { error } = await supabase.from('price_events').update(r).eq('id', existingRowId);
       return { error, id: existingRowId };
     }
     const { data, error } = await supabase.from('price_events').insert(r).select('id').single();
     return { error, id: data?.id };
+  };
+  // variant_scope 列のマイグレーション(0009)がまだ当たっていないDBでは、
+  // その列を外して書き直す。列が無いだけで全商品の記録が落ちるのを防ぐため。
+  const writeRow = async (r) => {
+    const result = await writeRowOnce(r);
+    if ('variant_scope' in r && isMissingVariantScopeColumn(result.error)) {
+      variantScopeColumnMissing = true;
+      console.warn('::warning title=variant_scope::price_events.variant_scope 列がありません。0009 のマイグレーションを適用してください(それまでは色・サイズの範囲を記録しません)');
+      delete r.variant_scope;
+      return writeRowOnce(r);
+    }
+    return result;
   };
   let written = await writeRow(row);
   if (isGenderCheckViolation(written.error) && row.gender === 'unisex') {

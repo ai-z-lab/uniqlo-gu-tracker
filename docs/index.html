@@ -774,6 +774,17 @@
     .fact.remarkdown { color: var(--down); }
     .fact.sold-out { color: var(--text-muted); }
     .fact.sizes { color: var(--text-muted); font-weight: 600; }
+    .fact.kinds { color: var(--text-muted); font-weight: 600; }
+
+    /* 値引きが一部の色・サイズだけのときの対象。欲しい色・サイズが本当に
+       この価格なのかを、商品ページを開く前に判断できるよう目立たせる。 */
+    .variant-scope {
+      color: var(--status-limited);
+      font-size: 0.8rem;
+      font-weight: 700;
+      line-height: 1.5;
+      margin-bottom: 0.3rem;
+    }
 
     .end-date {
       display: inline-block;
@@ -974,6 +985,7 @@
     .row-note.member { color: var(--status-limited); }
     .row-note.remarkdown { color: var(--down); }
     .row-note.end-date { color: var(--status-limited); }
+    .row-note.scope { color: var(--status-limited); font-weight: 800; flex-basis: 100%; }
 
     .row-price {
       font-size: 1.05rem;

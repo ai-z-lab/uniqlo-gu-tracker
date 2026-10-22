@@ -240,6 +240,13 @@ Supabase ダッシュボード → 該当プロジェクト → **SQL Editor** �
    — `product_id` に価格グループを含める形へ、既存行を `url` 列から再計算して
    振り直す(定価ラインと処分ラインの取り違えを解消。冪等)
 
+7. `0007_allow_kids_baby_gender.sql` / `0008_allow_unisex_gender.sql`
+   — `gender` に キッズ・ベビー・男女兼用 を許可
+8. [`supabase/migrations/0009_add_variant_scope.sql`](./supabase/migrations/0009_add_variant_scope.sql)
+   — 値引きが一部の色・サイズだけのときの対象範囲(`variant_scope`)列を追加。
+   未適用のあいだは、スクレイパーはこの列を外して記録し、ダッシュボードも
+   この列なしで読み込みます(範囲の表示が出ないだけで、壊れはしません)
+
 ### マイグレーションの自動適用
 
 上記の手作業は初回だけで、以降は **main にマージすれば自動で適用されます**

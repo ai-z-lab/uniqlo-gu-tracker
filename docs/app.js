@@ -620,7 +620,68 @@ function buildIndex(rows) {
     idx[brand].all[eventType][category] ??= [];
     idx[brand].all[eventType][category].push(entry);
   }
+  for (const byGender of Object.values(idx)) {
+    for (const byEvent of Object.values(byGender)) {
+      for (const byCategory of Object.values(byEvent)) {
+        for (const [category, list] of Object.entries(byCategory)) byCategory[category] = collapseSameNamed(list);
+      }
+    }
+  }
   return idx;
+}
+
+// 同じ名前・同じ価格・同じ値引きの商品を1枚にまとめる。UNIQLO/GU は柄や色ごとに
+// 品番を分けていることがあり(例: フランネルシャツ/オーバーチェック が5品番)、
+// 中身の同じカードが5枚並んでかさばっていた。品番が違う以上、記録は別々のまま
+// にして、表示だけをまとめる。値引きの対象が一部の色・サイズに限られている商品は、
+// まとめると範囲の表示が代表の1品番ぶんだけになってしまうので、まとめない。
+function collapseSameNamed(list) {
+  const groups = new Map();
+  const out = [];
+  for (const entry of list) {
+    const l = entry.latest;
+    if (l.variant_scope || !l.product_name) {
+      out.push(entry);
+      continue;
+    }
+    const key = [l.product_name, l.price, l.event_type, l.price_type, l.limited_price_end_date ?? "", entry.hidden].join("\u0000");
+    const head = groups.get(key);
+    if (head) {
+      head.siblings.push(entry);
+      continue;
+    }
+    const grouped = { ...entry, siblings: [] };
+    groups.set(key, grouped);
+    out.push(grouped);
+  }
+  return out;
+}
+
+// 同名でまとめたカードの在庫サイズ数は、まとめた品番ぶんの合計。
+function stockSizeCountOf(product) {
+  let total = product.latest.in_stock_size_count;
+  for (const sibling of product.siblings ?? []) {
+    const n = sibling.latest.in_stock_size_count;
+    if (n != null) total = (total ?? 0) + n;
+  }
+  return total;
+}
+
+// 値引きが一部の色・サイズだけのときの「対象」表記。全部が対象なら null。
+function formatVariantScope(scope) {
+  if (!scope || typeof scope !== "object") return null;
+  const join = (items, max = 6) =>
+    items.length > max ? `${items.slice(0, max).join("・")} ほか${items.length - max}` : items.join("・");
+  if (Array.isArray(scope.detail) && scope.detail.length > 0) {
+    const parts = scope.detail.map((d) => (d.sizes ? `${d.color}(${join(d.sizes, 4)})` : `${d.color}(全サイズ)`));
+    return `対象: ${join(parts, 4)}`;
+  }
+  const colors = Array.isArray(scope.colors) ? scope.colors : null;
+  const sizes = Array.isArray(scope.sizes) ? scope.sizes : null;
+  if (colors && sizes) return `対象: ${join(colors)} の ${join(sizes)}`;
+  if (colors) return `対象色: ${join(colors)}${scope.total_colors ? `(全${scope.total_colors}色中)` : ""}`;
+  if (sizes) return `対象サイズ: ${join(sizes)}`;
+  return null;
 }
 
 function categoryOrderFor(brand, categories) {
@@ -793,14 +854,29 @@ function renderCard(product) {
     soldOut.className = "fact sold-out";
     soldOut.textContent = "在庫なし";
     facts.appendChild(soldOut);
-  } else if (latest.in_stock_size_count != null && latest.in_stock_size_count > 0) {
+  } else if (stockSizeCountOf(product) > 0) {
     const sizes = document.createElement("span");
     sizes.className = "fact sizes";
-    sizes.textContent = `在庫${latest.in_stock_size_count}サイズ`;
+    sizes.textContent = `在庫${stockSizeCountOf(product)}サイズ`;
     facts.appendChild(sizes);
   }
 
+  if (product.siblings?.length > 0) {
+    const kinds = document.createElement("span");
+    kinds.className = "fact kinds";
+    kinds.textContent = `同名${product.siblings.length + 1}種類`;
+    facts.appendChild(kinds);
+  }
+
   if (facts.childElementCount > 0) card.appendChild(facts);
+
+  const scopeText = formatVariantScope(latest.variant_scope);
+  if (scopeText) {
+    const scopeEl = document.createElement("div");
+    scopeEl.className = "variant-scope";
+    scopeEl.textContent = scopeText;
+    card.appendChild(scopeEl);
+  }
 
   const endDateText = formatLimitedPriceEndDate(latest.limited_price_end_date);
   if (endDateText) {
@@ -982,9 +1058,12 @@ function renderTableRow(product) {
   const endDateText = formatLimitedPriceEndDate(latest.limited_price_end_date);
   if (endDateText && !offerOver) addNote(endDateText, "end-date");
   if (latest.stock_status === "stock_out") addNote("在庫なし", "sold-out");
-  else if (latest.in_stock_size_count != null && latest.in_stock_size_count > 0) {
-    addNote(`在庫${latest.in_stock_size_count}サイズ`, "sizes");
+  else if (stockSizeCountOf(product) > 0) {
+    addNote(`在庫${stockSizeCountOf(product)}サイズ`, "sizes");
   }
+  if (product.siblings?.length > 0) addNote(`同名${product.siblings.length + 1}種類`, "kinds");
+  const scopeText = formatVariantScope(latest.variant_scope);
+  if (scopeText) addNote(scopeText, "scope");
   if (notes.childElementCount > 0) nameCell.appendChild(notes);
   row.appendChild(nameCell);
 
@@ -1985,8 +2064,13 @@ viewTabsEl.addEventListener("click", (e) => {
   renderContent();
 });
 
-const PRICE_EVENT_COLUMNS =
+const BASE_PRICE_EVENT_COLUMNS =
   "product_id, product_name, brand, gender, category, event_type, url, price, list_price, currency, price_type, stock_status, in_stock_size_count, scraped_at, limited_price_end_date";
+// variant_scope(値引き対象の色・サイズ)は 0009 のマイグレーションで足した列。
+// 未適用のDBに対して指定すると全体が失敗するので、その場合は外して読み直す。
+let priceEventColumns = `${BASE_PRICE_EVENT_COLUMNS}, variant_scope`;
+const isMissingColumnError = (error) =>
+  Boolean(error) && (error.code === "42703" || /variant_scope/.test(error.message ?? ""));
 
 // PostgREST は1リクエストで返す行数に上限を持っていて、超えた分は
 // エラーにならず黙って切り捨てられる。このプロジェクトの上限は1,000行。
@@ -2012,7 +2096,7 @@ async function fetchPriceEvents() {
   const fetchPage = (from) =>
     supabase
       .from("price_events")
-      .select(PRICE_EVENT_COLUMNS)
+      .select(priceEventColumns)
       .gte("scraped_at", since)
       .order("scraped_at", { ascending: false })
       .range(from, from + PAGE_SIZE - 1);
@@ -2025,6 +2109,10 @@ async function fetchPriceEvents() {
     for (let i = 0; i < PARALLEL && from + i * PAGE_SIZE < MAX_ROWS; i++) starts.push(from + i * PAGE_SIZE);
     const results = await Promise.all(starts.map(fetchPage));
     for (const { data, error } of results) {
+      if (error && priceEventColumns !== BASE_PRICE_EVENT_COLUMNS && isMissingColumnError(error)) {
+        priceEventColumns = BASE_PRICE_EVENT_COLUMNS;
+        return fetchPriceEvents();
+      }
       if (error) return { rows: null, error };
       rows.push(...data);
       if (data.length < PAGE_SIZE) return { rows, error: null };
