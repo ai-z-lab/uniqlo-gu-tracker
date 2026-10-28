@@ -37,7 +37,7 @@ const DEBUG_URL = process.env.DEBUG_URL || null;
 // 行って終了する(データベースには触らない)。
 if (DEBUG_URL?.startsWith('probe:')) {
   const { spawnSync } = await import('node:child_process');
-  const r = spawnSync(process.execPath, [DEBUG_URL.slice(6).startsWith('ft') ? 'probe/ft-structure.mjs' : 'probe/previous-price.mjs', ...DEBUG_URL.slice(6).split(',')], { stdio: 'inherit' });
+  const r = spawnSync(process.execPath, [DEBUG_URL.slice(6).startsWith('list') ? 'probe/list-prices.mjs' : DEBUG_URL.slice(6).startsWith('ft') ? 'probe/ft-structure.mjs' : 'probe/previous-price.mjs', ...DEBUG_URL.slice(6).split(',')], { stdio: 'inherit' });
   process.exit(r.status ?? 0);
 }
 
