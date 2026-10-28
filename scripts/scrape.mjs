@@ -28,6 +28,7 @@ import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { catalogSourcesFrom, regularPriceRows } from './regular-prices.mjs';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -1032,15 +1033,18 @@ async function discoverProductsViaApi(source) {
   const origin = brandOrigin(source.brand);
   const referer = listingPageUrl(source.brand);
   const cap = source.maxProducts ?? DEFAULT_MAX_PRODUCTS_PER_SOURCE;
+  // 全商品の一覧(通常価格の記録用)だけは1ページ100件で引く。値下げ・期間限定の
+  // 一覧は従来どおり36件のまま。
+  const pageSize = source.pageSize ?? SEARCH_PAGE_SIZE;
   const items = [];
   let total = null;
 
   for (let page = 0; page < SEARCH_MAX_PAGES; page += 1) {
-    const offset = page * SEARCH_PAGE_SIZE;
+    const offset = page * pageSize;
     if (offset >= cap) break;
     const body = await postJson(
       `${origin}/jp/api/commerce/v5/ja/products/search?httpFailure=true`,
-      { ...source.api, offset, limit: SEARCH_PAGE_SIZE },
+      { ...source.api, offset, limit: pageSize },
       referer
     );
     const pageItems = body?.result?.items ?? [];
@@ -1660,6 +1664,66 @@ async function processSource(source, productRunState) {
   );
 
   return { discovered: items.length, recorded, priceChanged, skipped, failed };
+}
+
+// --- 値下げ前の通常価格の記録 ---
+//
+// UNIQLO は値下げした日から、サイトの定価欄もAPIも値下げ後の価格に書き換えてしまい、
+// 元の価格をどこにも出さない。「初値下げ」の商品の元の価格を知る方法は、値下げされる
+// 前に価格を記録しておくことだけ。そこで毎朝、全商品の一覧(価格つき)を引き、今日の
+// 値下げ・期間限定の一覧に載っていない商品の価格を regular_prices に残す。値下げ中の
+// 商品は上書きしないので、値下げ前の最後の通常価格がそのまま残る。
+// 一覧は価格を含むので、商品ごとの問い合わせは要らない(全体で数十回の通信)。
+async function fetchKnownRegularPrices() {
+  const known = new Map();
+  for (let from = 0; from < 100000; from += 1000) {
+    const { data, error } = await supabase
+      .from('regular_prices')
+      .select('product_id, regular_price')
+      .order('product_id', { ascending: true })
+      .range(from, from + 999);
+    if (error) throw error;
+    for (const r of data) known.set(r.product_id, r.regular_price);
+    if (data.length < 1000) break;
+  }
+  return known;
+}
+
+async function recordRegularPrices(sources, productRunState, emptySourceIds) {
+  const known = await fetchKnownRegularPrices();
+  const discountedIds = new Set(productRunState.keys());
+  const nowIso = new Date().toISOString();
+  let seen = 0;
+  let written = 0;
+
+  for (const catalog of catalogSourcesFrom(sources)) {
+    // その区分の値下げ一覧が空だった日は、どの商品が値下げ中か分からない。値下げ後の
+    // 価格を通常価格として書いてしまわないよう、その区分は飛ばす。
+    if (emptySourceIds.includes(catalog.saleSourceId)) {
+      console.log(`[regular] ${catalog.id}: 値下げ一覧が空だったため飛ばす`);
+      continue;
+    }
+    // 1つの区分が失敗しても、ほかの区分の記録は続ける。
+    try {
+      const { items, total } = await discoverProductsViaApi(catalog);
+      if (total != null && items.length < total) {
+        console.log(`[regular] ${catalog.id}: ${items.length}/${total}件で打ち切り(maxProducts)`);
+      }
+      seen += items.length;
+      const rows = regularPriceRows({ brand: catalog.brand, items, discountedIds, known, nowIso });
+      for (let i = 0; i < rows.length; i += 500) {
+        const { error } = await supabase.from('regular_prices').upsert(rows.slice(i, i + 500), { onConflict: 'product_id' });
+        if (error) throw error;
+      }
+      for (const r of rows) known.set(r.product_id, r.regular_price);
+      written += rows.length;
+      console.log(`[regular] ${catalog.id}: 全商品 ${items.length}件、通常価格を書いたのは ${rows.length}件`);
+    } catch (err) {
+      console.log(`::warning title=regular-prices::${catalog.id} の記録に失敗: ${err?.message ?? err}`);
+    }
+    await sleep(REQUEST_DELAY_MS);
+  }
+  console.log(`::notice title=regular-prices::全商品 ${seen}件を確認、通常価格を ${written}件記録(値下げ中 ${discountedIds.size}件は除外)`);
 }
 
 // --- Debug mode: render one or more products and dump what we saw ---
@@ -2696,6 +2760,14 @@ async function main() {
     await revisitKnownProducts(productRunState);
   } catch (err) {
     console.log(`[revisit] 失敗: ${err?.message ?? err}`);
+  }
+
+  // 値下げ前の通常価格の記録。表(regular_prices)がまだ無い、通信が失敗したなど
+  // でも巡回全体は成功扱いにする(本体の記録はもう済んでいるため)。
+  try {
+    await recordRegularPrices(sources, productRunState, totals.emptySources);
+  } catch (err) {
+    console.log(`::warning title=regular-prices::通常価格の記録に失敗: ${err?.message ?? err}`);
   }
 
   console.log(

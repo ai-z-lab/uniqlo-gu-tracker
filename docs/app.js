@@ -137,6 +137,10 @@ function saveMarkdownGroup(mode) {
 
 let state = { brand: "uniqlo", gender: "all", weekday: ALL_WEEKDAYS, view: loadView(), markdownGroup: loadMarkdownGroup(), section: "today", query: "", category: null };
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
+// 値下げ前の通常価格(product_id -> 円)。スクレイパーが、値下げ・期間限定の一覧に
+// 載る前の商品の価格を毎朝記録している(regular_prices 表)。UNIQLO は値下げした日から
+// 定価欄も書き換えてしまうので、元の価格を出せるのはこの記録があるときだけ。
+let regularPrices = new Map();
 
 const currencyFormatter = (currency) =>
   new Intl.NumberFormat("ja-JP", { style: "currency", currency, maximumFractionDigits: 0 });
@@ -666,6 +670,16 @@ function sectionLabelOf(e) {
   return e.labelByBrand?.[state.brand] ?? e.label;
 }
 
+// 値下げ前の価格として出せるものを返す。サイトの定価欄が今の価格より高ければそれ
+// (GUのアプリ会員価格など)。値下げ品は定価欄が値下げ後の価格に書き換わっていること
+// が多いので、無ければ事前に記録した通常価格を使う。どちらも今の価格以下なら null
+// (「0%OFF」を出さない)。
+function originalPriceOf(latest) {
+  if (latest.list_price != null && latest.list_price > latest.price) return latest.list_price;
+  const regular = regularPrices.get(latest.product_id);
+  return regular != null && regular > latest.price ? regular : null;
+}
+
 function renderCard(product) {
   const { latest, history, offerOver, unconfirmed } = product;
   const previous = history.length > 1 ? history[history.length - 2] : null;
@@ -732,15 +746,16 @@ function renderCard(product) {
   // 通常価格が別途取れている商品(GUのアプリ会員特別価格など)だけ、元値と
   // 割引率を添える。値下げされただけの商品は通常価格＝実売価格になるため
   // list_price が入らず、ここは出ません(「0%OFF」を出さないため)。
-  if (latest.list_price != null && latest.list_price > latest.price) {
+  const original = originalPriceOf(latest);
+  if (original != null) {
     const wasPrice = document.createElement("span");
     wasPrice.className = "was-price";
-    wasPrice.textContent = `通常 ${fmt.format(latest.list_price)}`;
+    wasPrice.textContent = `通常 ${fmt.format(original)}`;
     priceRow.appendChild(wasPrice);
 
     const off = document.createElement("span");
     off.className = "discount";
-    off.textContent = `${Math.round((1 - latest.price / latest.list_price) * 100)}%OFF`;
+    off.textContent = `${Math.round((1 - latest.price / original) * 100)}%OFF`;
     priceRow.appendChild(off);
   }
 
@@ -994,15 +1009,16 @@ function renderTableRow(product) {
   price.className = "row-price";
   price.textContent = fmt.format(latest.price);
   priceCell.appendChild(price);
-  if (latest.list_price != null && latest.list_price > latest.price) {
+  const original = originalPriceOf(latest);
+  if (original != null) {
     const was = document.createElement("div");
     was.className = "row-was";
     const wasPrice = document.createElement("span");
     wasPrice.className = "was-price";
-    wasPrice.textContent = `通常 ${fmt.format(latest.list_price)}`;
+    wasPrice.textContent = `通常 ${fmt.format(original)}`;
     const off = document.createElement("span");
     off.className = "discount";
-    off.textContent = `${Math.round((1 - latest.price / latest.list_price) * 100)}%OFF`;
+    off.textContent = `${Math.round((1 - latest.price / original) * 100)}%OFF`;
     was.appendChild(wasPrice);
     was.appendChild(off);
     priceCell.appendChild(was);
@@ -2094,7 +2110,30 @@ async function checkCrawlInProgress() {
   return false;
 }
 
+// 通常価格の記録を全件読む。表がまだ無い・読めないときは空にして、通常価格が出ない
+// だけで他の表示には影響させない。
+async function fetchRegularPrices() {
+  const map = new Map();
+  try {
+    for (let from = 0; from < 100000; from += PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("regular_prices")
+        .select("product_id, regular_price")
+        .order("product_id", { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+      if (error) throw error;
+      for (const r of data) map.set(r.product_id, r.regular_price);
+      if (data.length < PAGE_SIZE) break;
+    }
+  } catch (err) {
+    console.warn("regular_prices を読めませんでした(通常価格は出しません):", err?.message ?? err);
+    return new Map();
+  }
+  return map;
+}
+
 async function main() {
+  const regularPromise = fetchRegularPrices();
   const { rows: data, error } = await fetchPriceEvents();
 
   if (error) {
@@ -2109,6 +2148,7 @@ async function main() {
     return;
   }
 
+  regularPrices = await regularPromise;
   statusEl.textContent = "";
   renderUpdated(data);
   index = buildIndex(data);

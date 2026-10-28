@@ -239,6 +239,12 @@ Supabase ダッシュボード → 該当プロジェクト → **SQL Editor** �
 6. [`supabase/migrations/0006_product_id_include_price_group.sql`](./supabase/migrations/0006_product_id_include_price_group.sql)
    — `product_id` に価格グループを含める形へ、既存行を `url` 列から再計算して
    振り直す(定価ラインと処分ラインの取り違えを解消。冪等)
+9. [`supabase/migrations/0009_create_regular_prices.sql`](./supabase/migrations/0009_create_regular_prices.sql)
+   — 値下げ前の通常価格を記録する `regular_prices` 表を作る。UNIQLO は値下げした日から
+   定価欄も値下げ後の価格に書き換えるため、元の価格は値下げ前に記録しておくしかない。
+   スクレイパーが毎朝、値下げ・期間限定の一覧に載っていない商品の価格をここへ残し、
+   画面が「通常 ¥X」として添える。この表が無くても巡回と表示は止まらず、通常価格が
+   出ないだけ。(0007・0008 は上の手順で適用済みとして扱う)
 
 ### マイグレーションの自動適用
 
