@@ -33,6 +33,14 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const DEBUG_URL = process.env.DEBUG_URL || null;
 
+// 調査用ブランチ専用: DEBUG_URL が probe: で始まるときは、値下げ前価格の調査だけを
+// 行って終了する(データベースには触らない)。
+if (DEBUG_URL?.startsWith('probe:')) {
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(process.execPath, ['probe/previous-price.mjs', ...DEBUG_URL.slice(6).split(',')], { stdio: 'inherit' });
+  process.exit(r.status ?? 0);
+}
+
 if (!DEBUG_URL && (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)) {
   console.error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set as environment variables.');
   process.exit(1);
