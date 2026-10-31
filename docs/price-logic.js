@@ -18,7 +18,7 @@ export function priceStagePoints(history, eventTypes) {
     if (eventTypes && !eventTypes.has(row.event_type)) continue;
     const last = points[points.length - 1];
     if (!last || last.price !== row.price) {
-      points.push({ price: row.price, currency: row.currency, scraped_at: row.scraped_at, event_type: row.event_type });
+      points.push({ price: row.price, currency: row.currency, scraped_at: row.scraped_at, event_type: row.event_type, price_type: row.price_type ?? null });
     }
   }
   return points;
@@ -47,16 +47,21 @@ export function markdownStageCount(points) {
   return points.length - (points.risen ? 1 : 0);
 }
 
+// 一時的な価格かどうか。LIMITED_EVENT_TYPES に加え、値下げ棚で会員 API 価格が
+// 勝った場合は event_type=markdown のまま price_type=member になる
+// (scrape.mjs の classifyEventType は listingType で event_type を決め、
+// price_type とは独立)。どちらの記録形式でも「期間が来れば戻る価格」として扱う。
+function isTemporaryPrice(row) {
+  return LIMITED_EVENT_TYPES.has(row.event_type) || row.price_type === "member";
+}
+
 // 価格が上がって、まだ下がっていない(いま効いている)値上げ。無ければ null。
 // { from: 上がる前の価格(不明なら null), to: 上がった後の価格, at: 確認した日時 }
 //
 // 期間限定が終わって元の価格に戻ったものは値上げに数えない(直前が期間限定の
-// 行なら、それは戻りであって値上げではない)。値上げのあとに期間限定で一時的に
-// 下がっても、期間限定は終われば戻るので値上げは効いたままとみなす。値下げ一覧
-// 経由で下がったら、その値上げはもう効いていない。
-//
-// GU のアプリ会員価格(price_type === "member")は DB 上 event_type が "limited" や
-// "first_limited" として記録されているため、LIMITED_EVENT_TYPES で正しく処理される。
+// 行なら、それは戻りであって値上げではない)。値上げのあとに期間限定または会員価格で
+// 一時的に下がっても、その値引きは終われば戻るので値上げは効いたままとみなす。
+// 値下げ一覧経由で下がったら、その値上げはもう効いていない。
 export function riseOf(history) {
   const latest = history[history.length - 1];
   const points = priceStagePoints(history, null);
@@ -65,14 +70,14 @@ export function riseOf(history) {
     const prev = points[i - 1];
     const cur = points[i];
     if (cur.price > prev.price) {
-      if (!LIMITED_EVENT_TYPES.has(prev.event_type)) rise = { from: prev.price, to: cur.price, at: cur.scraped_at };
-    } else if (rise && !LIMITED_EVENT_TYPES.has(cur.event_type)) {
+      if (!isTemporaryPrice(prev)) rise = { from: prev.price, to: cur.price, at: cur.scraped_at };
+    } else if (rise && !isTemporaryPrice(cur)) {
       rise = null;
     }
   }
-  // 値上げ後に期間限定価格へ下がると latest.price < rise.to になるが、
-  // 期間限定は終われば rise.to に戻るので値上げは効いたままとみなす。
-  if (rise && (latest.price >= rise.to || LIMITED_EVENT_TYPES.has(latest.event_type))) return rise;
+  // 値上げ後に一時的な価格へ下がると latest.price < rise.to になるが、
+  // 一時価格は終われば rise.to に戻るので値上げは効いたままとみなす。
+  if (rise && (latest.price >= rise.to || isTemporaryPrice(latest))) return rise;
 
   // 上の判定で拾えないが、値下げの段階が値上げから始まっていて、まだ下がって
   // いない商品(値下げの段階では「値上げ後」)。値下げセクションから外すぶん、

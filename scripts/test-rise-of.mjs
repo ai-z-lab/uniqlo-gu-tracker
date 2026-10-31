@@ -3,8 +3,8 @@
 
 import { riseOf, priceStagePoints, markdownStagePoints, markdownStageCount } from "../docs/price-logic.js";
 
-function row(price, event_type, scraped_at) {
-  return { price, event_type, scraped_at, currency: "JPY" };
+function row(price, event_type, scraped_at, price_type) {
+  return { price, event_type, scraped_at, currency: "JPY", price_type: price_type ?? null };
 }
 
 let passed = 0;
@@ -155,11 +155,25 @@ assert(
 
 // 12. GU アプリ会員価格(DB 上は limited として記録) — 値上げ後の会員価格も rise を保持
 assert(
-  "値上げ → 会員価格(DB上limited)で下がる → rise を返す",
+  "値上げ → 会員価格(event_type=limited, price_type=member)で下がる → rise を返す",
   riseOf([
     row(1000, "markdown", "2026-08-01"),
     row(1500, "price_up",  "2026-09-29"),
-    row(1200, "limited",   "2026-10-07"), // price_type === "member" だが event_type は "limited"
+    row(1200, "limited",   "2026-10-07", "member"),
+  ]),
+  { from: 1000, to: 1500 }
+);
+
+// 13. GU アプリ会員価格が値下げ棚で記録された場合(event_type=markdown, price_type=member)。
+// scrape.mjs の classifyEventType は listingType で event_type を決めるため、
+// 値下げ棚掲載で会員 API 価格が通常価格より安ければ event_type=markdown のまま
+// price_type=member になる。LIMITED_EVENT_TYPES だけでは捕まえられないケース。
+assert(
+  "値上げ → 会員価格(event_type=markdown, price_type=member)で下がる → rise を返す",
+  riseOf([
+    row(1000, "markdown", "2026-08-01"),
+    row(1500, "price_up",  "2026-09-29"),
+    row(1200, "markdown",  "2026-10-07", "member"),
   ]),
   { from: 1000, to: 1500 }
 );

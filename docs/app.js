@@ -1648,8 +1648,8 @@ function renderToolbar(rawBucket, bucket, crawl) {
   categoryFilterEl.value = state.category ?? "";
 
   // 値上げセクションは event_type によらず rise を持つ全商品を集めるので、
-  // タブ件数も rawBucket 全体から計算する。
-  const risingCount = EVENT_TYPE_CONFIG.flatMap((e) => Object.values(rawBucket[e.key] || {}).flat()).filter((p) => !p.hidden && p.rise).length;
+  // タブ件数も bucket 全体(カテゴリ・検索語で絞り済み)から計算する。
+  const risingCount = EVENT_TYPE_CONFIG.flatMap((e) => Object.values(bucket[e.key] || {}).flat()).filter((p) => !p.hidden && p.rise).length;
   const tabs = [
     { key: "today", label: "今日", count: crawl ? todayChangesOf(bucket, crawl.latestDay).filter((p) => !p.hidden).length : 0 },
     ...EVENT_TYPE_CONFIG.map((e) => ({
