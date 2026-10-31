@@ -1,5 +1,14 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "./config.js";
+import {
+  MARKDOWN_EVENT_TYPES,
+  LIMITED_EVENT_TYPES,
+  MARKDOWN_SEQUENCE_TYPES,
+  priceStagePoints,
+  markdownStagePoints,
+  markdownStageCount,
+  riseOf,
+} from "./price-logic.js";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
@@ -35,7 +44,10 @@ const EVENT_TYPE_CONFIG = [
   { key: "member", label: "アプリ会員価格", labelByBrand: { gu: "期間限定(アプリ会員)" } },
   { key: "markdown", label: "値下げ" },
   { key: "first_markdown", label: "初値下げ" },
-  { key: "price_up", label: "値上げ" },
+  // 値上げは event_type ではなく riseOf() で集める。price_up の行は上がった当日
+  // にしか付かず、翌日には limited/markdown に戻るため、event_type で切ると
+  // 値上げがその日のうちに一覧から消えてしまう。
+  { key: "price_up", label: "値上げ(価格改定)" },
 ];
 
 // 各セクションを日付で切るときの「いつその状態になったか」。
@@ -44,7 +56,7 @@ const EVENT_TYPE_CONFIG = [
 // - 期間限定: いま(最後)の周期を最後に確認した日。週単位で切るので(DATE_BUCKET)、
 //   「その週に期間限定価格で出ていた商品」になる。開始日で切ると、何週も続いている
 //   期間限定が今週の一覧から漏れる。
-// - 値上げ: 価格が実際に動いた最後の日
+// - 値上げ(価格改定): いま効いている値上げを確認した日
 const DATE_AXIS = {
   markdown: (p) => {
     // 値上げ後まだ下がっていない商品は、どの日にも「値下げ」されていない。
@@ -61,10 +73,7 @@ const DATE_AXIS = {
     const periods = limitedPeriods(p.history);
     return periods.length ? periods[periods.length - 1].from : null;
   },
-  price_up: (p) => {
-    const points = priceStagePoints(p.history, null);
-    return points.length ? points[points.length - 1].scraped_at : null;
-  },
+  price_up: (p) => p.rise?.at ?? null,
 };
 
 // 日付チップの単位。既定は日本時間の1日。期間限定だけは週(金曜〜木曜)で切る —
@@ -164,55 +173,9 @@ function formatLimitedPriceEndDate(isoDate) {
   return `${endDateFormatter.format(date)}まで`;
 }
 
-const MARKDOWN_EVENT_TYPES = new Set(["first_markdown", "markdown"]);
-const LIMITED_EVENT_TYPES = new Set(["first_limited", "limited"]);
-
-// The points at which this product's price actually changed, keeping only rows
-// whose event_type is in `eventTypes` (pass null to keep every row).
-//
-// The scraper writes a fresh row every scrape even when the price hasn't moved
-// (see scripts/scrape.mjs), so same-price rows collapse into a single point
-// here. Rows outside `eventTypes` are skipped rather than breaking the
-// sequence, so an observation of a different kind in the middle doesn't split
-// one run of markdowns into two.
-function priceStagePoints(history, eventTypes) {
-  const points = [];
-  for (const row of history) {
-    if (eventTypes && !eventTypes.has(row.event_type)) continue;
-    const last = points[points.length - 1];
-    if (!last || last.price !== row.price) {
-      points.push({ price: row.price, currency: row.currency, scraped_at: row.scraped_at, event_type: row.event_type });
-    }
-  }
-  return points;
-}
-
-// A distinct "値下げ段階" — "3段階目" means "the 3rd distinct price this
-// product has had while markdown-listed", not "3 rows in the DB".
-//
-// 値上げの行(price_up)も系列に含め、価格が上がった時点で段階を数え直す。
-// 以前は値上げの行を飛ばしていたため、¥1,990 → (9/29 値上げ ¥2,990) →
-// (9/30 同じ¥2,990が値下げ一覧で記録)が「9/30に2段階目へ値下げ」に見えていた。
-// 値上げで始まった系列は先頭に risen を立て、その点は段階に数えない
-// (markdownStageCount)。値上げ後にまだ下がっていない商品は0段階＝「値上げ後」。
-const MARKDOWN_SEQUENCE_TYPES = new Set([...MARKDOWN_EVENT_TYPES, "price_up"]);
-
-function markdownStagePoints(history) {
-  const points = priceStagePoints(history, MARKDOWN_SEQUENCE_TYPES);
-  let start = 0;
-  for (let i = 1; i < points.length; i++) {
-    if (points[i].price > points[i - 1].price) start = i;
-  }
-  const current = points.slice(start);
-  // 値下げ一覧で見つかる前に値上げの行しか無い商品(先頭が price_up)も、値上げ
-  // から始まった系列として扱う。
-  current.risen = start > 0 || current[0]?.event_type === "price_up";
-  return current;
-}
-
-function markdownStageCount(points) {
-  return points.length - (points.risen ? 1 : 0);
-}
+// MARKDOWN_EVENT_TYPES, LIMITED_EVENT_TYPES, MARKDOWN_SEQUENCE_TYPES,
+// priceStagePoints, markdownStagePoints, markdownStageCount, riseOf
+// は price-logic.js からインポート済み。
 
 function markdownStageLabel(count) {
   return count === 0 ? "値上げ後" : `${count}段階目`;
@@ -615,6 +578,9 @@ function buildIndex(rows) {
       unconfirmed,
       soldOut,
       hidden,
+      // 価格が上がって、まだ下がっていない場合は rise を持つ。price_up セクションは
+      // event_type ではなくこのフィールドで商品を集める。
+      rise: riseOf(history),
     };
     for (const g of genderKeys) idx[brand][g][eventType][category].push(entry);
     // ALL タブ用。ジェンダーレス化やサイズ展開で、メンズ/レディース/キッズの
@@ -680,6 +646,13 @@ function originalPriceOf(latest) {
   return regular != null && regular > latest.price ? regular : null;
 }
 
+// 値上げの表示文字列。main は「+¥1,000」、sub は「9/29 ¥1,990から」。
+function riseSummaryOf(rise, fmt) {
+  const date = stageDateFormatter.format(new Date(rise.at));
+  if (rise.from === null) return { main: "値上げ", sub: date };
+  return { main: `値上げ +${fmt.format(rise.to - rise.from)}`, sub: `${date} ${fmt.format(rise.from)}から` };
+}
+
 function renderCard(product) {
   const { latest, history, offerOver, unconfirmed } = product;
   const previous = history.length > 1 ? history[history.length - 2] : null;
@@ -708,7 +681,14 @@ function renderCard(product) {
   const periods = isLimitedFamily ? limitedPeriods(history) : [];
 
   const eventConfig = EVENT_TYPE_CONFIG.find((e) => e.key === latest.event_type);
-  if (eventConfig) {
+  if (product.rise) {
+    // 値上げが効いている商品は、どの一覧で見つかったかより値上げを先に伝える。
+    const badge = document.createElement("span");
+    badge.className = "status-badge";
+    badge.style.setProperty("--status-color", "var(--status-price_up)");
+    badge.textContent = riseSummaryOf(product.rise, fmt).main;
+    topRow.appendChild(badge);
+  } else if (eventConfig) {
     const badge = document.createElement("span");
     badge.className = "status-badge";
     badge.style.setProperty("--status-color", `var(--status-${eventConfig.key})`);
@@ -1029,15 +1009,24 @@ function renderTableRow(product) {
   stageCell.className = "col-stage";
   const stage = document.createElement("span");
   stage.className = "row-stage";
-  stage.textContent = stageCellTextFor(latest, stagePoints, periods);
+  const riseSummary = product.rise ? riseSummaryOf(product.rise, fmt) : null;
+  if (riseSummary) {
+    // 値上げが効いている商品は段階の代わりに「いつ・いくら上がったか」を出す。
+    stage.classList.add("rise");
+    stage.textContent = riseSummary.main;
+  } else {
+    stage.textContent = stageCellTextFor(latest, stagePoints, periods);
+  }
   stageCell.appendChild(stage);
-  const intervalText = formatInterval(
-    isMarkdownFamily && stagePoints.length > 1
-      ? daysBetween(stagePoints[stagePoints.length - 2].scraped_at, stagePoints[stagePoints.length - 1].scraped_at)
-      : isLimitedFamily && periods.length > 1
-        ? daysBetween(periods[periods.length - 2].from, periods[periods.length - 1].from)
-        : null
-  );
+  const intervalText = riseSummary
+    ? riseSummary.sub
+    : formatInterval(
+        isMarkdownFamily && stagePoints.length > 1
+          ? daysBetween(stagePoints[stagePoints.length - 2].scraped_at, stagePoints[stagePoints.length - 1].scraped_at)
+          : isLimitedFamily && periods.length > 1
+            ? daysBetween(periods[periods.length - 2].from, periods[periods.length - 1].from)
+            : null
+      );
   if (intervalText) {
     const interval = document.createElement("div");
     interval.className = "row-interval";
@@ -1048,7 +1037,10 @@ function renderTableRow(product) {
 
   const historyCell = document.createElement("td");
   historyCell.className = "col-history";
-  if (isMarkdownFamily && stagePoints.length > 0) {
+  if (product.rise) {
+    // 値下げの段階は値上げで数え直すので、値上げ前後の全価格を並べる。
+    appendStageTrail(historyCell, priceStagePoints(history, null));
+  } else if (isMarkdownFamily && stagePoints.length > 0) {
     appendStageTrail(historyCell, stagePoints);
   } else if (isLimitedFamily && periods.length > 0) {
     // 期間限定は1回だけでも周期(いつからいつまで)を出す。表では終了日の注記が
@@ -1655,9 +1647,16 @@ function renderToolbar(rawBucket, bucket, crawl) {
   }
   categoryFilterEl.value = state.category ?? "";
 
+  // 値上げセクションは event_type によらず rise を持つ全商品を集めるので、
+  // タブ件数も rawBucket 全体から計算する。
+  const risingCount = EVENT_TYPE_CONFIG.flatMap((e) => Object.values(rawBucket[e.key] || {}).flat()).filter((p) => !p.hidden && p.rise).length;
   const tabs = [
     { key: "today", label: "今日", count: crawl ? todayChangesOf(bucket, crawl.latestDay).filter((p) => !p.hidden).length : 0 },
-    ...EVENT_TYPE_CONFIG.map((e) => ({ key: e.key, label: sectionLabelOf(e), count: countBuyable(bucket[e.key]) })),
+    ...EVENT_TYPE_CONFIG.map((e) => ({
+      key: e.key,
+      label: sectionLabelOf(e),
+      count: e.key === "price_up" ? risingCount : countBuyable(bucket[e.key]),
+    })),
     { key: "trend", label: "曜日の傾向", count: null },
   ];
   sectionTabsEl.innerHTML = "";
@@ -1743,6 +1742,22 @@ function renderContent() {
     bucket[e.key] = byCat;
   }
 
+  // セクションに並べる商品のフィルタ。
+  // - 値上げ: event_type によらず、いま値上げが効いている全商品(riseOf が非 null)。
+  //   price_up 行は上がった当日しか付かないため、event_type で切ると翌日に消える。
+  // - 値下げ: 値上げ後まだ下がっていない商品(「値上げ後」状態 = 0段階)を除く。
+  //   それらは値上げセクションに出る。
+  const productsForSection = (key) => {
+    if (key === "price_up") {
+      return everyProduct.filter(
+        (p) => p.rise && (!state.category || p.category === state.category) && (!query || normalizeQuery(p.latest.product_name).includes(query))
+      );
+    }
+    const products = Object.values(bucket[key] || {}).flat();
+    if (key !== "markdown") return products;
+    return products.filter((p) => !(p.rise && markdownStageCount(markdownStagePoints(p.history)) === 0));
+  };
+
   renderToolbar(rawBucket, bucket, crawl);
 
   // 検索中は、どのセクションかに関わらず一致した商品を種類ごとに全部出す。
@@ -1765,12 +1780,9 @@ function renderContent() {
 
   for (const eventConfig of EVENT_TYPE_CONFIG) {
     if (eventConfig.key !== state.section) continue;
-    const byCategory = bucket[eventConfig.key];
-    if (!byCategory) continue;
-    const categories = Object.keys(byCategory);
-    if (categories.length === 0) continue;
 
-    const allProducts = categories.flatMap((c) => byCategory[c]);
+    const allProducts = productsForSection(eventConfig.key);
+    if (allProducts.length === 0) continue;
     // 見出しにもチップにも「いま買えるもの」だけを数えて出す。終了・在庫なしは
     // カテゴリの中の折りたたみに落ちているので、何件あるかは括弧で添える
     // (件数の書き込みは renderGroups が担当 — 絞り込みで変わるため)。
