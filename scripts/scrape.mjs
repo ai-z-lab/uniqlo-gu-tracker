@@ -1055,6 +1055,7 @@ async function discoverProductsViaApi(source) {
   }
 
   logLineFieldProbe(source, items);
+  await logDetailLineProbe(source, items);
   return { items: items.slice(0, cap), total };
 }
 
@@ -1062,6 +1063,43 @@ async function discoverProductsViaApi(source) {
 // いるかを調べる診断。バッジ表示の前に、実データで項目名を確かめるためのもの。
 // 1ソースにつき1回だけ、項目名の一覧と、ライン名らしき値を持つ項目を出す。
 const lineProbeDone = new Set();
+const detailProbeDone = new Set();
+
+// 一覧APIにライン名が無かったので、商品詳細APIにあるかを調べる。UNIQLO:C の
+// イージーワイドパンツ(487258)と UNIQLO U(487270)があれば優先して見る。
+// 項目の全パスと、productFlags の名前の一覧も出す(一部店舗商品以外の印も分かる)。
+async function logDetailLineProbe(source, items) {
+  if (detailProbeDone.has(source.brand) || items.length === 0) return;
+  detailProbeDone.add(source.brand);
+  const flagNames = new Map();
+  for (const item of items) {
+    for (const f of item?.representative?.flags?.productFlags ?? []) {
+      flagNames.set(f?.name ?? f?.code, (flagNames.get(f?.name ?? f?.code) ?? 0) + 1);
+    }
+  }
+  console.log(`::group::detail-probe ${source.brand}`);
+  console.log(`productFlags: ${[...flagNames].map(([k, v]) => `${k}×${v}`).join(', ') || '(なし)'}`);
+  const preferred = items.filter((i) => /48725[0-9]|48727[0-9]/.test(i.productId ?? ''));
+  const targets = [...preferred, ...items].slice(0, 3);
+  for (const item of targets) {
+    const url = `${brandOrigin(source.brand)}/jp/api/commerce/v5/ja/products/${item.productId}/price-groups/${item.priceGroup ?? '00'}/details.json`;
+    try {
+      const body = await getJson(url, listingPageUrl(source.brand));
+      const paths = new Map();
+      const walk = (v, path) => {
+        if (typeof v === 'string') {
+          if (LINE_PATTERN.test(v) || /sub.?brand|line|label/i.test(path)) paths.set(path, v.slice(0, 60));
+        } else if (Array.isArray(v)) v.slice(0, 10).forEach((x) => walk(x, `${path}[]`));
+        else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${k}` : k);
+      };
+      walk(body, '');
+      console.log(`  ${item.productId} ${item.name}: ${[...paths].map(([k, v]) => `${k}=${v}`).join(' ; ') || 'ヒットなし'}`);
+    } catch (err) {
+      console.log(`  ${item.productId}: ${err.message}`);
+    }
+  }
+  console.log('::endgroup::');
+}
 const LINE_PATTERN = /uniqlo\s*:?\s*[cu]\b|\+j|marni|jw\s*anderson|collab|コラボ|一部店舗|店舗限定|店舗のみ/i;
 function logLineFieldProbe(source, items) {
   if (lineProbeDone.has(source.brand) || items.length === 0) return;
