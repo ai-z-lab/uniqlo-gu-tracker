@@ -1062,7 +1062,7 @@ async function discoverProductsViaApi(source) {
 // いるかを調べる診断。バッジ表示の前に、実データで項目名を確かめるためのもの。
 // 1ソースにつき1回だけ、項目名の一覧と、ライン名らしき値を持つ項目を出す。
 const lineProbeDone = new Set();
-const LINE_PATTERN = /uniqlo\s*:?\s*[cu]\b|\+j|marni|jw\s*anderson|collab|コラボ/i;
+const LINE_PATTERN = /uniqlo\s*:?\s*[cu]\b|\+j|marni|jw\s*anderson|collab|コラボ|一部店舗|店舗限定|店舗のみ/i;
 function logLineFieldProbe(source, items) {
   if (lineProbeDone.has(source.brand) || items.length === 0) return;
   lineProbeDone.add(source.brand);
