@@ -136,6 +136,7 @@ function saveMarkdownGroup(mode) {
 }
 
 let state = { brand: "uniqlo", gender: "all", weekday: ALL_WEEKDAYS, view: loadView(), markdownGroup: loadMarkdownGroup(), section: "today", query: "", category: null };
+let latestCrawlDay = null; // 最新の巡回日(JST)。この日に動いたカードを光らせる
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
 // 値下げ前の通常価格(product_id -> 円)。スクレイパーが、値下げ・期間限定の一覧に
 // 載る前の商品の価格を毎朝記録している(regular_prices 表)。UNIQLO は値下げした日から
@@ -357,10 +358,21 @@ function groupProductsByDate(products, dateOf, bucket = DAY_BUCKET) {
     if (!key) continue;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
-  return [...counts.entries()]
-    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    .slice(0, 14)
-    .map(([key, count]) => ({ key, label: bucket.labelOf(key), count }));
+  const keys = [...counts.keys()].sort((a, b) => (b < a ? -1 : 1));
+  // 日単位のときは、変動が0件だった日も0件のチップとして並べる。日が飛ぶと
+  // 「その日は動きが無かった」のか「巡回できていない」のかが見分けられない。
+  if (bucket === DAY_BUCKET && keys.length > 0) {
+    const filled = [];
+    let cursor = new Date(`${keys[0]}T00:00:00Z`);
+    for (let i = 0; i < 14; i += 1) {
+      const key = cursor.toISOString().slice(0, 10);
+      if (key < keys[keys.length - 1]) break;
+      filled.push({ key, label: bucket.labelOf(key), count: counts.get(key) ?? 0 });
+      cursor = new Date(cursor.getTime() - 24 * 60 * 60 * 1000);
+    }
+    return filled;
+  }
+  return keys.slice(0, 14).map((key) => ({ key, label: bucket.labelOf(key), count: counts.get(key) }));
 }
 
 function dateBucketKeyOf(product, dateOf, bucket) {
@@ -615,6 +627,7 @@ function buildIndex(rows) {
       unconfirmed,
       soldOut,
       hidden,
+      eventType,
     };
     for (const g of genderKeys) idx[brand][g][eventType][category].push(entry);
     // ALL タブ用。ジェンダーレス化やサイズ展開で、メンズ/レディース/キッズの
@@ -690,7 +703,8 @@ function renderCard(product) {
   const card = document.createElement("a");
   // 終了・未確認の商品は消さずに残し、見た目を落として区別する。消してしまうと
   // 「昨日まで載っていた商品がなぜ消えたのか」が分からなくなるため。
-  card.className = `card${offerOver ? " offer-over" : ""}${unconfirmed && !offerOver ? " unconfirmed" : ""}`;
+  const changedToday = !offerOver && latestCrawlDay !== null && changedOnDay(product, product.eventType, latestCrawlDay);
+  card.className = `card${offerOver ? " offer-over" : ""}${unconfirmed && !offerOver ? " unconfirmed" : ""}${changedToday ? " changed-today" : ""}`;
   card.href = latest.url;
   card.target = "_blank";
   card.rel = "noopener noreferrer";
@@ -1729,6 +1743,7 @@ function renderContent() {
   const rawBucket = bucket;
   const everyProduct = EVENT_TYPE_CONFIG.flatMap((e) => Object.values(rawBucket[e.key] || {}).flat());
   const crawl = latestCrawlOf(rawBucket);
+  latestCrawlDay = crawl?.latestDay ?? null;
 
   // カテゴリと検索語で絞った bucket。以降のセクションはすべてこれを使う。
   const query = normalizeQuery(state.query);

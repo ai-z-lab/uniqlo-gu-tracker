@@ -1054,7 +1054,41 @@ async function discoverProductsViaApi(source) {
     await sleep(REQUEST_DELAY_MS);
   }
 
+  logLineFieldProbe(source, items);
   return { items: items.slice(0, cap), total };
+}
+
+// コラボ・ライン(UNIQLO:C / UNIQLO U / +J など)が一覧APIのどの項目に入って
+// いるかを調べる診断。バッジ表示の前に、実データで項目名を確かめるためのもの。
+// 1ソースにつき1回だけ、項目名の一覧と、ライン名らしき値を持つ項目を出す。
+const lineProbeDone = new Set();
+const LINE_PATTERN = /uniqlo\s*:?\s*[cu]\b|\+j|marni|jw\s*anderson|collab|コラボ/i;
+function logLineFieldProbe(source, items) {
+  if (lineProbeDone.has(source.brand) || items.length === 0) return;
+  lineProbeDone.add(source.brand);
+  console.log(`::group::line-probe ${source.brand} (項目名)`);
+  console.log(`item keys: ${Object.keys(items[0]).join(', ')}`);
+  const hits = new Map();
+  const walk = (value, path, productId) => {
+    if (typeof value === 'string') {
+      if (LINE_PATTERN.test(value)) {
+        const entry = hits.get(path) ?? { values: new Set(), examples: [] };
+        entry.values.add(value);
+        if (entry.examples.length < 3) entry.examples.push(productId);
+        hits.set(path, entry);
+      }
+    } else if (Array.isArray(value)) {
+      value.slice(0, 20).forEach((v) => walk(v, `${path}[]`, productId));
+    } else if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) walk(v, path ? `${path}.${k}` : k, productId);
+    }
+  };
+  for (const item of items) walk(item, '', item.productId);
+  if (hits.size === 0) console.log('ライン名らしき値を持つ項目は見つからなかった');
+  for (const [path, { values, examples }] of hits) {
+    console.log(`  ${path}: ${[...values].slice(0, 8).join(' | ')} (例: ${examples.join(', ')})`);
+  }
+  console.log('::endgroup::');
 }
 
 // 期間限定・アプリ会員価格といった値引きの種類は、l2s の flags.priceFlags に
