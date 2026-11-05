@@ -29,6 +29,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { catalogSourcesFrom, regularPriceRows } from './regular-prices.mjs';
+import { lineTagsFrom, productLineRows } from './product-lines.mjs';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -1761,6 +1762,58 @@ async function fetchKnownRegularPrices() {
   return known;
 }
 
+// コラボ・特別ライン(UNIQLO : C / UNIQLO U / JW ANDERSON / UTのコラボ など)に属する
+// 商品を product_lines に記録する。ライン名は商品の一覧APIの返答に入っておらず、
+// 「特別コレクション」「UT」のタグで絞り込んだ一覧からだけ分かる。そこで、まず全商品の
+// 一覧の aggregations.tags でラインの種類を取り、ラインごとに絞り込んで商品コードを集める。
+// ラインの特集から商品が消えても行は消さない(終了後・復刻待ちでもバッジを残すため)。
+async function recordProductLines(sources) {
+  const brands = [...new Set(sources.map((s) => s.brand))];
+  const nowIso = new Date().toISOString();
+  let lines = 0;
+  let written = 0;
+
+  for (const brand of brands) {
+    const brandSources = sources.filter((s) => s.brand === brand);
+    const genderIds = [...new Set(brandSources.flatMap((s) => s.api?.genderIds ?? []))];
+    const url = `${brandOrigin(brand)}/jp/api/commerce/v5/ja/products/search?httpFailure=true`;
+    const referer = listingPageUrl(brand);
+    try {
+      // 性別を指定せずに全商品を引けるならそれが最も漏れが無い。拒否されたら性別ごとに引く。
+      const attempts = [{}, ...genderIds.map((g) => ({ genderIds: [g] }))];
+      const base = await postJson(url, { flagCodes: [], offset: 0, limit: 1 }, referer).catch(() => null);
+      const tagsBody = base ?? (await postJson(url, { genderIds, flagCodes: [], offset: 0, limit: 1 }, referer));
+      const tags = lineTagsFrom(tagsBody?.result?.aggregations?.tags);
+      const groups = (tagsBody?.result?.aggregations?.tags ?? []).map((g) => g.groupName).join(', ');
+      console.log(`[lines] ${brand}: ライン ${tags.length}種 (タグのグループ: ${groups})`);
+      for (const tag of tags) {
+        const seen = new Map();
+        for (const gender of base ? [attempts[0]] : attempts.slice(1)) {
+          const { items } = await discoverProductsViaApi({
+            brand,
+            api: { ...gender, flagCodes: [], tags: { [tag.group]: [tag.value] } },
+            maxProducts: 3000,
+            pageSize: 100,
+          });
+          for (const row of productLineRows({ brand, items, tag, nowIso })) seen.set(row.product_id, row);
+        }
+        const rows = [...seen.values()];
+        console.log(`[lines] ${brand} ${tag.group}:${tag.value} (${tag.label}): ${rows.length}件 例: ${rows.slice(0, 3).map((r) => r.product_id).join(', ')}`);
+        for (let i = 0; i < rows.length; i += 500) {
+          const { error } = await supabase.from('product_lines').upsert(rows.slice(i, i + 500), { onConflict: 'product_id,line_key', ignoreDuplicates: true });
+          if (error) throw error;
+        }
+        lines += 1;
+        written += rows.length;
+        await sleep(REQUEST_DELAY_MS);
+      }
+    } catch (err) {
+      console.log(`::warning title=product-lines::${brand} のライン記録に失敗: ${err?.message ?? err}`);
+    }
+  }
+  console.log(`::notice title=product-lines::ライン ${lines}種、商品 ${written}件を確認`);
+}
+
 async function recordRegularPrices(sources, productRunState, emptySourceIds) {
   const known = await fetchKnownRegularPrices();
   const discountedIds = new Set(productRunState.keys());
@@ -3009,6 +3062,14 @@ async function main() {
     await recordRegularPrices(sources, productRunState, totals.emptySources);
   } catch (err) {
     console.log(`::warning title=regular-prices::通常価格の記録に失敗: ${err?.message ?? err}`);
+  }
+
+  // コラボ・特別ラインの記録。表(product_lines)がまだ無い、通信が失敗したなどでも
+  // 巡回全体は成功扱いにする。
+  try {
+    await recordProductLines(sources);
+  } catch (err) {
+    console.log(`::warning title=product-lines::ライン記録に失敗: ${err?.message ?? err}`);
   }
 
   console.log(

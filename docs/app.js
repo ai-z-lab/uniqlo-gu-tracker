@@ -142,6 +142,9 @@ let index = null; // brand -> gender -> event_type -> category -> [{ latest, his
 // 載る前の商品の価格を毎朝記録している(regular_prices 表)。UNIQLO は値下げした日から
 // 定価欄も書き換えてしまうので、元の価格を出せるのはこの記録があるときだけ。
 let regularPrices = new Map();
+// コラボ・特別ライン(UNIQLO : C など)。product_id -> ライン名の配列(product_lines 表)。
+// 同じ商品名でもラインが違う別商品があるため、カードにライン名を出して区別する。
+let productLines = new Map();
 
 const currencyFormatter = (currency) =>
   new Intl.NumberFormat("ja-JP", { style: "currency", currency, maximumFractionDigits: 0 });
@@ -715,6 +718,14 @@ function renderCard(product) {
   const title = document.createElement("h2");
   title.textContent = latest.product_name || latest.product_id;
   topRow.appendChild(title);
+
+  // ライン名(UNIQLO : C / Uniqlo U など)。商品名の直後に黒いバッジで出す。
+  for (const label of productLines.get(latest.product_id) ?? []) {
+    const lineBadge = document.createElement("span");
+    lineBadge.className = "line-badge";
+    lineBadge.textContent = label;
+    topRow.appendChild(lineBadge);
+  }
 
   const isMarkdownFamily = MARKDOWN_EVENT_TYPES.has(latest.event_type);
   const isLimitedFamily = LIMITED_EVENT_TYPES.has(latest.event_type);
@@ -2147,8 +2158,36 @@ async function fetchRegularPrices() {
   return map;
 }
 
+// ライン名の対応を全件読む。表がまだ無い・読めないときは空にして、バッジが出ない
+// だけで他の表示には影響させない。
+async function fetchProductLines() {
+  const map = new Map();
+  try {
+    for (let from = 0; from < 100000; from += PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("product_lines")
+        .select("product_id, line_label")
+        .order("product_id", { ascending: true })
+        .order("line_key", { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+      if (error) throw error;
+      for (const r of data) {
+        const list = map.get(r.product_id) ?? [];
+        if (!list.includes(r.line_label)) list.push(r.line_label);
+        map.set(r.product_id, list);
+      }
+      if (data.length < PAGE_SIZE) break;
+    }
+  } catch (err) {
+    console.warn("product_lines を読めませんでした(ライン名は出しません):", err?.message ?? err);
+    return new Map();
+  }
+  return map;
+}
+
 async function main() {
   const regularPromise = fetchRegularPrices();
+  const linesPromise = fetchProductLines();
   const { rows: data, error } = await fetchPriceEvents();
 
   if (error) {
@@ -2164,6 +2203,7 @@ async function main() {
   }
 
   regularPrices = await regularPromise;
+  productLines = await linesPromise;
   statusEl.textContent = "";
   renderUpdated(data);
   index = buildIndex(data);

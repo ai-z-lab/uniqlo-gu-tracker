@@ -681,6 +681,24 @@
     /* Status badge: a filled pill with text, positioned top-right — a
        different shape *and* position from the brand stripe, so brand vs
        status stay visually distinct even when their colors are close. */
+    /* コラボ・特別ラインのバッジ(UNIQLO : C など)。値下げの状態バッジと混ざらない
+       よう、黒地に白文字にする。 */
+    .line-badge {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 5px;
+      background: #111;
+      color: #fff;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .line-badge { background: #f2f2f2; color: #111; }
+    }
+
     .status-badge {
       flex-shrink: 0;
       display: inline-block;
