@@ -2776,6 +2776,66 @@ async function loadSources() {
   return JSON.parse(raw);
 }
 
+// コラボ・ライン診断。特集ページ(UNIQLO:C / UNIQLO U / GU×rokh など)をブラウザで
+// 開き、(1) ページ内のライン別リンク(名前とURL)、(2) 各ラインのページに載っている
+// 商品コードを出す。結果を見て config にラインのURL一覧を登録する。
+// 実行: workflow_dispatch の debug_url に collab-probe と入れる。
+const COLLAB_PROBE_TOKEN = 'collab-probe';
+const COLLAB_SEEDS = [
+  { brand: 'uniqlo', origin: 'https://www.uniqlo.com', paths: ['/jp/ja/women/special-collaboration', '/jp/ja/men/special-collaboration', '/jp/ja/kids/special-collaboration', '/jp/ja/baby/special-collaboration'] },
+  { brand: 'gu', origin: 'https://www.gu-global.com', paths: ['/jp/ja/women/special-collection', '/jp/ja/men/special-collection', '/jp/ja/kids/special-collection', '/jp/ja/feature/contents'] },
+];
+const COLLAB_LINK_PATTERN = /special-collab|special-collection|\/collaboration\/|feature\/contents/;
+
+async function collabOpen(page, url) {
+  await withTimeout(page.goto(url, { waitUntil: 'domcontentloaded', timeout: LISTING_NAV_TIMEOUT_MS }), LISTING_NAV_TIMEOUT_MS + 2_000, 'collab goto');
+  await page.waitForTimeout(LISTING_SETTLE_MS);
+  for (let i = 0; i < 6; i += 1) {
+    await page.mouse.wheel(0, 3000);
+    await page.waitForTimeout(700);
+  }
+}
+
+async function probeCollabPages(browser) {
+  const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
+  const page = await context.newPage();
+  for (const seed of COLLAB_SEEDS) {
+    const seen = new Set();
+    for (const path of seed.paths) {
+      const url = seed.origin + path;
+      console.log(`::group::collab-probe ${url}`);
+      try {
+        await collabOpen(page, url);
+        const links = await page.evaluate(() =>
+          [...document.querySelectorAll('a[href]')].map((a) => ({ text: (a.textContent || a.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ').slice(0, 60), href: a.href }))
+        );
+        const lineLinks = [...new Map(links.filter((l) => COLLAB_LINK_PATTERN.test(l.href)).map((l) => [l.href, l])).values()];
+        const html = await page.content();
+        const codes = [...new Set([...html.matchAll(/products\/(E\d{6}-\d{3})/g)].map((m) => m[1]))];
+        console.log(`title: ${await page.title()} / 商品コード ${codes.length}件 例: ${codes.slice(0, 4).join(', ')}`);
+        console.log(`ライン候補リンク ${lineLinks.length}件`);
+        for (const l of lineLinks.slice(0, 40)) console.log(`  ${l.text || '(テキストなし)'} -> ${l.href}`);
+        // ライン別ページの中身(商品コード)も数件ぶん見る。
+        for (const l of lineLinks.filter((x) => !seen.has(x.href) && x.href !== url).slice(0, 8)) {
+          seen.add(l.href);
+          try {
+            await collabOpen(page, l.href);
+            const h = await page.content();
+            const c = [...new Set([...h.matchAll(/products\/(E\d{6}-\d{3})/g)].map((m) => m[1]))];
+            console.log(`  [line] ${l.text} ${l.href}: 商品コード ${c.length}件 例: ${c.slice(0, 4).join(', ')}`);
+          } catch (err) {
+            console.log(`  [line] ${l.href}: ${err.message}`);
+          }
+        }
+      } catch (err) {
+        console.log(`取得失敗: ${err.message}`);
+      }
+      console.log('::endgroup::');
+    }
+  }
+  await context.close();
+}
+
 async function main() {
   if (DEBUG_URL) {
     const token = DEBUG_URL.trim();
@@ -2801,6 +2861,7 @@ async function main() {
     }
     await withBrowser(async (browser) => {
       if (token === API_PROBE_TOKEN) await probeApis(browser);
+      else if (token === COLLAB_PROBE_TOKEN) await probeCollabPages(browser);
       else await debugProducts(browser, DEBUG_URL);
     });
     return;
