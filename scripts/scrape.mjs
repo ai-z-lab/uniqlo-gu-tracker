@@ -2836,9 +2836,54 @@ async function probeCollabPages(browser) {
   await context.close();
 }
 
+// 一覧APIの返答の形を調べる診断。ラインで絞り込む条件(facets/conditions など)が
+// 返答に含まれていないか、また絞り込みの候補になりそうな項目を総当たりで試す。
+// 実行: debug_url に search-shape-probe
+const SEARCH_SHAPE_PROBE_TOKEN = 'search-shape-probe';
+async function probeSearchShape() {
+  for (const brand of ['uniqlo', 'gu']) {
+    const origin = brandOrigin(brand);
+    const referer = listingPageUrl(brand);
+    const url = `${origin}/jp/api/commerce/v5/ja/products/search?httpFailure=true`;
+    const base = { genderIds: [brand === 'uniqlo' ? 1071 : 2256], flagCodes: ['discount'], offset: 0, limit: 1 };
+    console.log(`::group::search-shape ${brand}`);
+    try {
+      const body = await postJson(url, base, referer);
+      console.log(`top keys: ${Object.keys(body).join(', ')}`);
+      console.log(`result keys: ${Object.keys(body.result ?? {}).join(', ')}`);
+      for (const [k, v] of Object.entries(body.result ?? {})) {
+        if (k === 'items') continue;
+        console.log(`  result.${k}: ${JSON.stringify(v).slice(0, 1500)}`);
+      }
+      console.log(`item[0].representative: ${JSON.stringify(body.result?.items?.[0]?.representative).slice(0, 1200)}`);
+      console.log(`item[0].plds: ${JSON.stringify(body.result?.items?.[0]?.plds).slice(0, 400)} / l1Id=${body.result?.items?.[0]?.l1Id}`);
+    } catch (err) {
+      console.log(`失敗: ${err.message}`);
+    }
+    // 候補の項目名を足して、件数(pagination.total)が変わるかを見る。変われば絞り込めている。
+    const baseTotal = (await postJson(url, base, referer).catch(() => null))?.result?.pagination?.total;
+    console.log(`基準 total=${baseTotal}`);
+    const candidates = ['specialCollectionIds', 'collaborationIds', 'collectionIds', 'subBrandIds', 'brandIds', 'conceptIds', 'lineIds', 'categoryIds', 'l1Ids', 'l2Ids', 'themeIds', 'specialIds', 'campaignIds', 'productFlagCodes', 'productFlags', 'flagCodes2'];
+    for (const key of candidates) {
+      try {
+        const body = await postJson(url, { ...base, [key]: [1] }, referer);
+        const total = body?.result?.pagination?.total;
+        console.log(`  ${key}=[1] -> total=${total}${total !== baseTotal ? '  <-- 変化' : ''}`);
+      } catch (err) {
+        console.log(`  ${key}: ${err.message}`);
+      }
+    }
+    console.log('::endgroup::');
+  }
+}
+
 async function main() {
   if (DEBUG_URL) {
     const token = DEBUG_URL.trim();
+    if (token === SEARCH_SHAPE_PROBE_TOKEN) {
+      await probeSearchShape();
+      return;
+    }
     if (token === CLEANUP_REVISIT_TOKEN) {
       await cleanupRevisitTestRows();
       return;
