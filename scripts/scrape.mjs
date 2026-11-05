@@ -2860,6 +2860,33 @@ async function probeSearchShape() {
     } catch (err) {
       console.log(`失敗: ${err.message}`);
     }
+    // 絞り込み用の一覧(aggregations)の中身と、商品ごとの pld(区分)の種類を調べる。
+    try {
+      const body = await postJson(url, { ...base, limit: 100 }, referer);
+      const agg = body?.result?.aggregations ?? {};
+      for (const [k, v] of Object.entries(agg)) {
+        const arr = Array.isArray(v) ? v : [];
+        console.log(`  aggregations.${k}: ${arr.length}件 ${JSON.stringify(arr.slice(0, 40).map((x) => x?.name ?? x?.code ?? x)).slice(0, 900)}`);
+      }
+      const plds = new Map();
+      let offset = 0;
+      for (let page = 0; page < 8; page += 1) {
+        const b = await postJson(url, { ...base, offset, limit: 100 }, referer);
+        const its = b?.result?.items ?? [];
+        for (const it of its) for (const pl of it.plds ?? []) {
+          const key = `${pl.code}:${pl.name}`;
+          const e = plds.get(key) ?? { n: 0, ex: [] };
+          e.n += 1;
+          if (e.ex.length < 3) e.ex.push(`${it.productId} ${it.name}`);
+          plds.set(key, e);
+        }
+        offset += 100;
+        if (its.length < 100) break;
+      }
+      for (const [k, e] of plds) console.log(`  pld ${k} ×${e.n} 例: ${e.ex.join(' | ')}`);
+    } catch (err) {
+      console.log(`  aggregations/pld 調査失敗: ${err.message}`);
+    }
     // 候補の項目名を足して、件数(pagination.total)が変わるかを見る。変われば絞り込めている。
     const baseTotal = (await postJson(url, base, referer).catch(() => null))?.result?.pagination?.total;
     console.log(`基準 total=${baseTotal}`);
