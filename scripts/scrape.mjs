@@ -2890,6 +2890,39 @@ async function probeSearchShape() {
     } catch (err) {
       console.log(`  aggregations/pld 調査失敗: ${err.message}`);
     }
+    // aggregations.tags の special-collection / ut グループで絞り込む指定のしかたを探す。
+    // pagination.total が基準から変われば、その指定が効いている。
+    const tagGroup = brand === 'uniqlo' ? 'special-collection' : 'special-collection';
+    const tagValue = brand === 'uniqlo' ? 'uniqlo-c' : 'gu-rokh';
+    const noFlag = { genderIds: base.genderIds, offset: 0, limit: 1 };
+    const noFlagTotal = (await postJson(url, noFlag, referer).catch(() => null))?.result?.pagination?.total;
+    console.log(`  タグ絞り込み候補(フラグなし基準 total=${noFlagTotal})`);
+    const forms = {
+      'tags:[v]': { tags: [tagValue] },
+      'tags:[g:v]': { tags: [`${tagGroup}:${tagValue}`] },
+      'tags:[g/v]': { tags: [`${tagGroup}/${tagValue}`] },
+      'tags:{g:[v]}': { tags: { [tagGroup]: [tagValue] } },
+      'tags:[{groupName,values}]': { tags: [{ groupName: tagGroup, values: [tagValue] }] },
+      'tagNames:[v]': { tagNames: [tagValue] },
+      'tagIds:[v]': { tagIds: [tagValue] },
+      'specialCollection:[v]': { specialCollection: [tagValue] },
+      'specialCollections:[v]': { specialCollections: [tagValue] },
+      'specialCollectionNames:[v]': { specialCollectionNames: [tagValue] },
+      '[g]:[v]': { [tagGroup]: [tagValue] },
+      'filters:{g:[v]}': { filters: { [tagGroup]: [tagValue] } },
+      'tagFilters:[{name,values}]': { tagFilters: [{ name: tagGroup, values: [tagValue] }] },
+      'aggregations:{tags:[v]}': { aggregations: { tags: [tagValue] } },
+    };
+    for (const [label, extra] of Object.entries(forms)) {
+      try {
+        const body = await postJson(url, { ...noFlag, ...extra }, referer);
+        const total = body?.result?.pagination?.total;
+        const ex = (body?.result?.items ?? []).slice(0, 2).map((i) => `${i.productId} ${i.name}`).join(' | ');
+        console.log(`    ${label} -> total=${total}${total !== noFlagTotal ? '  <-- 変化 ' + ex : ''}`);
+      } catch (err) {
+        console.log(`    ${label}: ${err.message}`);
+      }
+    }
     // 候補の項目名を足して、件数(pagination.total)が変わるかを見る。変われば絞り込めている。
     const baseTotal = (await postJson(url, base, referer).catch(() => null))?.result?.pagination?.total;
     console.log(`基準 total=${baseTotal}`);
