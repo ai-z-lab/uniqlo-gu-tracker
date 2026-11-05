@@ -616,6 +616,37 @@
       transform: translateY(-1px);
     }
 
+    /* 最新の巡回日に動いたカード: 品のある琥珀色の縁と、ゆっくり脈打つ光。
+       色だけに頼らず、右上に「NEW」の帯も付ける(色覚差・白黒印刷でも分かる)。 */
+    .card.changed-today {
+      border-color: var(--changed-edge, #e0a526);
+      box-shadow: 0 0 0 1px var(--changed-edge, #e0a526), 0 0 14px var(--changed-glow, rgba(224, 165, 38, 0.45));
+      animation: changed-pulse 2.8s ease-in-out infinite;
+    }
+
+    .card.changed-today::after {
+      content: "NEW";
+      position: absolute;
+      top: 0;
+      right: 0;
+      padding: 0.1rem 0.55rem;
+      border-bottom-left-radius: 10px;
+      background: var(--changed-edge, #e0a526);
+      color: #3a2800;
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+    }
+
+    @keyframes changed-pulse {
+      0%, 100% { box-shadow: 0 0 0 1px var(--changed-edge, #e0a526), 0 0 8px var(--changed-glow, rgba(224, 165, 38, 0.3)); }
+      50% { box-shadow: 0 0 0 1px var(--changed-edge, #e0a526), 0 0 18px var(--changed-glow, rgba(224, 165, 38, 0.6)); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .card.changed-today { animation: none; }
+    }
+
     .card h2 {
       text-decoration: underline;
       text-decoration-color: transparent;
@@ -650,6 +681,24 @@
     /* Status badge: a filled pill with text, positioned top-right — a
        different shape *and* position from the brand stripe, so brand vs
        status stay visually distinct even when their colors are close. */
+    /* コラボ・特別ラインのバッジ(UNIQLO : C など)。値下げの状態バッジと混ざらない
+       よう、黒地に白文字にする。 */
+    .line-badge {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 5px;
+      background: #111;
+      color: #fff;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .line-badge { background: #f2f2f2; color: #111; }
+    }
+
     .status-badge {
       flex-shrink: 0;
       display: inline-block;
