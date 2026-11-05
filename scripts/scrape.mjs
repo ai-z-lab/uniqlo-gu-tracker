@@ -1767,7 +1767,7 @@ async function fetchKnownRegularPrices() {
 // 「特別コレクション」「UT」のタグで絞り込んだ一覧からだけ分かる。そこで、まず全商品の
 // 一覧の aggregations.tags でラインの種類を取り、ラインごとに絞り込んで商品コードを集める。
 // ラインの特集から商品が消えても行は消さない(終了後・復刻待ちでもバッジを残すため)。
-async function recordProductLines(sources) {
+async function recordProductLines(sources, { dryRun = false } = {}) {
   const brands = [...new Set(sources.map((s) => s.brand))];
   const nowIso = new Date().toISOString();
   let lines = 0;
@@ -1779,16 +1779,21 @@ async function recordProductLines(sources) {
     const url = `${brandOrigin(brand)}/jp/api/commerce/v5/ja/products/search?httpFailure=true`;
     const referer = listingPageUrl(brand);
     try {
-      // 性別を指定せずに全商品を引けるならそれが最も漏れが無い。拒否されたら性別ごとに引く。
-      const attempts = [{}, ...genderIds.map((g) => ({ genderIds: [g] }))];
-      const base = await postJson(url, { flagCodes: [], offset: 0, limit: 1 }, referer).catch(() => null);
-      const tagsBody = base ?? (await postJson(url, { genderIds, flagCodes: [], offset: 0, limit: 1 }, referer));
-      const tags = lineTagsFrom(tagsBody?.result?.aggregations?.tags);
-      const groups = (tagsBody?.result?.aggregations?.tags ?? []).map((g) => g.groupName).join(', ');
-      console.log(`[lines] ${brand}: ライン ${tags.length}種 (タグのグループ: ${groups})`);
+      // ライン(タグ)の一覧は、性別を指定した問い合わせでないと返ってこない。性別ごとに
+      // 引いて、ラインの種類を集める。メンズ・ウィメンズ・キッズでラインが違うため。
+      const genders = genderIds.length > 0 ? genderIds.map((g) => ({ genderIds: [g] })) : [{}];
+      const tagMap = new Map();
+      for (const gender of genders) {
+        const body = await postJson(url, { ...gender, flagCodes: [], offset: 0, limit: 1 }, referer);
+        const groups = (body?.result?.aggregations?.tags ?? []).map((g) => g.groupName).join(', ');
+        console.log(`[lines] ${brand} ${JSON.stringify(gender)}: タグのグループ: ${groups}`);
+        for (const tag of lineTagsFrom(body?.result?.aggregations?.tags)) tagMap.set(`${tag.group}:${tag.value}`, tag);
+      }
+      const tags = [...tagMap.values()];
+      console.log(`[lines] ${brand}: ライン ${tags.length}種`);
       for (const tag of tags) {
         const seen = new Map();
-        for (const gender of base ? [attempts[0]] : attempts.slice(1)) {
+        for (const gender of genders) {
           const { items } = await discoverProductsViaApi({
             brand,
             api: { ...gender, flagCodes: [], tags: { [tag.group]: [tag.value] } },
@@ -1799,7 +1804,7 @@ async function recordProductLines(sources) {
         }
         const rows = [...seen.values()];
         console.log(`[lines] ${brand} ${tag.group}:${tag.value} (${tag.label}): ${rows.length}件 例: ${rows.slice(0, 3).map((r) => r.product_id).join(', ')}`);
-        for (let i = 0; i < rows.length; i += 500) {
+        for (let i = 0; !dryRun && i < rows.length; i += 500) {
           const { error } = await supabase.from('product_lines').upsert(rows.slice(i, i + 500), { onConflict: 'product_id,line_key', ignoreDuplicates: true });
           if (error) throw error;
         }
@@ -2996,6 +3001,11 @@ async function probeSearchShape() {
 async function main() {
   if (DEBUG_URL) {
     const token = DEBUG_URL.trim();
+    if (token === 'lines-dry') {
+      // ライン記録だけを、DBに書かずに試す(ログでライン名と件数を確認する用)。
+      await recordProductLines(await loadSources(), { dryRun: true });
+      return;
+    }
     if (token === SEARCH_SHAPE_PROBE_TOKEN) {
       await probeSearchShape();
       return;
