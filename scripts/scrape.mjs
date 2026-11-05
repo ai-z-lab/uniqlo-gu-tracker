@@ -2868,6 +2868,9 @@ async function probeSearchShape() {
         const arr = Array.isArray(v) ? v : [];
         console.log(`  aggregations.${k}: ${arr.length}件 ${JSON.stringify(arr.slice(0, 40).map((x) => x?.name ?? x?.code ?? x)).slice(0, 900)}`);
       }
+      for (const g of agg.tags ?? []) {
+        console.log(`  tags group ${g.groupName}(${g.groupLocalizationName}) docCount=${g.docCount}: ${JSON.stringify((g.values ?? []).map((v) => `${v.name}=${v.localizationName}(${v.docCount})`)).slice(0, 700)}`);
+      }
       const plds = new Map();
       let offset = 0;
       for (let page = 0; page < 8; page += 1) {
