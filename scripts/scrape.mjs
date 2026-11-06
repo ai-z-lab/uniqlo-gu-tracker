@@ -2652,9 +2652,9 @@ async function probeCategoryFields() {
   console.log(`::notice title=category-probe item0::${clip(items[0], 1400)}`);
   const res = r.body?.result ?? {};
   console.log(`::notice title=cp-a result keys::${Object.keys(res).join(',')} | body keys: ${Object.keys(r.body ?? {}).join(',')}`);
-  for (const [k, v] of Object.entries(res)) {
-    if (k === 'items') continue;
-    console.log(`::notice title=cp-b ${k}::${clip(v, 900)}`);
+  for (const [k, v] of Object.entries(res.aggregations ?? {})) {
+    if (k === 'colors') continue;
+    console.log(`::notice title=cp-c ${k}::${clip(v, 1200)}`);
   }
   const dist = {};
   for (const item of items) {
