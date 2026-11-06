@@ -1061,25 +1061,27 @@ async function discoverProductsViaApi(source) {
 
 // ユニクロ公式の大分類(サイトのカテゴリー別一覧と同じもの)。商品自身のデータには
 // 区分が入っていないので、classIds で絞った一覧を分類ごとに引いて商品を振り分ける。
-// 複数の分類に載る商品(ヒートテック等)は、上にあるものを優先する。
-const UNIQLO_CLASSES = [
-  [1479, 'アウター'],
-  [94385, 'シャツ・ポロシャツ'],
-  [1480, 'フリース・スウェット・Tシャツ'],
-  [94381, 'セーター・カーディガン'],
-  [1481, 'パンツ・ズボン'],
-  [51226, 'スカート・ワンピース'],
-  [1483, 'インナー・下着・ブラトップ'],
-  [1688, 'ルームウェア'],
-  [1690, 'グッズ'],
-  [147949, 'ラウンジ・インナーウェア'],
-  [97897, 'ヒートテック'],
-  [79771, 'エアリズム'],
-  [2305, 'スポーツユーティリティウェア'],
-  [94719, '特別コレクション'],
-];
+// 分類ID は性別ごとに違う(メンズ・キッズ・ベビーで別)ため、一覧APIが返す
+// aggregations.tree.classes をその都度読む。複数の分類に載る商品は、
+// ヒートテック等の横断的な分類より、衣類の種類で決まる分類を優先する。
+const CROSS_CUTTING_CLASS_RE = /ヒートテック|エアリズム|特別コレクション|スポーツユーティリティ|ラウンジ・インナーウェア/;
 
 async function attachOfficialCategories(source, items, origin, referer) {
+  let classes = [];
+  try {
+    const head = await postJson(
+      `${origin}/jp/api/commerce/v5/ja/products/search?httpFailure=true`,
+      { ...source.api, offset: 0, limit: 1 },
+      referer
+    );
+    classes = head?.result?.aggregations?.tree?.classes ?? [];
+  } catch (err) {
+    console.error(`[${source.id}] category tree fetch failed: ${err.message}`);
+  }
+  const UNIQLO_CLASSES = [
+    ...classes.filter((c) => !CROSS_CUTTING_CLASS_RE.test(c.name)),
+    ...classes.filter((c) => CROSS_CUTTING_CLASS_RE.test(c.name)),
+  ].map((c) => [c.id, c.name]);
   const byProduct = new Map();
   for (const [classId, className] of UNIQLO_CLASSES) {
     try {
