@@ -2637,6 +2637,31 @@ async function probeGenderLabels() {
   }
 }
 
+// 商品に公式のカテゴリー区分が入っているかを確かめる。商品1件の全キーと、
+// class/category らしきキーの値の分布を注記に出す。
+const CATEGORY_PROBE_TOKEN = 'category-probe';
+
+async function probeCategoryFields() {
+  const origin = 'https://www.uniqlo.com';
+  const r = await postSearch(origin, { genderIds: [1071], flagCodes: ['discount'], offset: 0, limit: 60 }, `${origin}/jp/ja/`);
+  const items = r.body?.result?.items ?? [];
+  console.log(`::notice title=category-probe status::HTTP ${r.status} items=${items.length}`);
+  if (items.length === 0) return;
+  const clip = (v, n) => JSON.stringify(v).slice(0, n);
+  console.log(`::notice title=category-probe keys::${Object.keys(items[0]).join(',')}`);
+  console.log(`::notice title=category-probe item0::${clip(items[0], 1400)}`);
+  const dist = {};
+  for (const item of items) {
+    for (const [k, v] of Object.entries(item)) {
+      if (!/class|categor|type|path|genre|kind/i.test(k)) continue;
+      const key = `${k}=${clip(v, 80)}`;
+      dist[key] = (dist[key] ?? 0) + 1;
+    }
+  }
+  const lines = Object.entries(dist).map(([k, n]) => `${k} x${n}`);
+  for (let i = 0; i < lines.length; i += 8) console.log(`::notice title=category-probe dist ${i / 8 + 1}::${lines.slice(i, i + 8).join(' | ')}`);
+}
+
 const DRY_RUN_TOKEN = 'dry-run';
 
 async function withBrowser(run) {
@@ -2721,6 +2746,10 @@ async function main() {
     }
     if (token === GENDER_LABEL_PROBE_TOKEN) {
       await probeGenderLabels();
+      return;
+    }
+    if (token === CATEGORY_PROBE_TOKEN) {
+      await probeCategoryFields();
       return;
     }
     if (token === GENDER_PROBE_TOKEN) {
