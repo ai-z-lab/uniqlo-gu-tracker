@@ -141,6 +141,7 @@
     "listingType": "limited",
     "label": "GU 期間限定価格(キッズ)",
     "api": { "genderIds": [2258], "flagCodes": ["limitedOffer"] },
-    "maxProducts": 600
+    "maxProducts": 600,
+    "allowEmpty": true
   }
 ]
