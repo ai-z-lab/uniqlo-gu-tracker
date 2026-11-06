@@ -2650,6 +2650,18 @@ async function probeCategoryFields() {
   const clip = (v, n) => JSON.stringify(v).slice(0, n);
   console.log(`::notice title=category-probe keys::${Object.keys(items[0]).join(',')}`);
   console.log(`::notice title=category-probe item0::${clip(items[0], 1400)}`);
+  const byL1 = {};
+  for (const item of items) {
+    const k = JSON.stringify(item.l1Id);
+    (byL1[k] ??= []).push(item.name);
+  }
+  for (const [k, names] of Object.entries(byL1)) console.log(`::notice title=category-probe l1Id ${k}::x${names.length} ${names.slice(0, 5).join(' / ')}`);
+  console.log(`::notice title=category-probe plds::${clip(items[0].plds, 400)}`);
+  for (const key of ['classIds', 'l1Ids', 'categoryIds']) {
+    const v = items[0].l1Id;
+    const t = await postSearch(origin, { genderIds: [1071], flagCodes: ['discount'], [key]: [v], offset: 0, limit: 1 }, `${origin}/jp/ja/`);
+    console.log(`::notice title=category-probe filter ${key}::HTTP ${t.status} total=${t.body?.result?.pagination?.total ?? '?'}`);
+  }
   const dist = {};
   for (const item of items) {
     for (const [k, v] of Object.entries(item)) {
