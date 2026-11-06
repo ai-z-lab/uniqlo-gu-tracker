@@ -1054,7 +1054,53 @@ async function discoverProductsViaApi(source) {
     await sleep(REQUEST_DELAY_MS);
   }
 
-  return { items: items.slice(0, cap), total };
+  const capped = items.slice(0, cap);
+  if (source.brand === 'uniqlo') await attachOfficialCategories(source, capped, origin, referer);
+  return { items: capped, total };
+}
+
+// ユニクロ公式の大分類(サイトのカテゴリー別一覧と同じもの)。商品自身のデータには
+// 区分が入っていないので、classIds で絞った一覧を分類ごとに引いて商品を振り分ける。
+// 複数の分類に載る商品(ヒートテック等)は、上にあるものを優先する。
+const UNIQLO_CLASSES = [
+  [1479, 'アウター'],
+  [94385, 'シャツ・ポロシャツ'],
+  [1480, 'フリース・スウェット・Tシャツ'],
+  [94381, 'セーター・カーディガン'],
+  [1481, 'パンツ・ズボン'],
+  [51226, 'スカート・ワンピース'],
+  [1483, 'インナー・下着・ブラトップ'],
+  [1688, 'ルームウェア'],
+  [1690, 'グッズ'],
+  [147949, 'ラウンジ・インナーウェア'],
+  [97897, 'ヒートテック'],
+  [79771, 'エアリズム'],
+  [2305, 'スポーツユーティリティウェア'],
+  [94719, '特別コレクション'],
+];
+
+async function attachOfficialCategories(source, items, origin, referer) {
+  const byProduct = new Map();
+  for (const [classId, className] of UNIQLO_CLASSES) {
+    try {
+      for (let offset = 0; offset < 5000; offset += 100) {
+        const body = await postJson(
+          `${origin}/jp/api/commerce/v5/ja/products/search?httpFailure=true`,
+          { ...source.api, classIds: [classId], offset, limit: 100 },
+          referer
+        );
+        const page = body?.result?.items ?? [];
+        for (const it of page) if (it?.productId && !byProduct.has(it.productId)) byProduct.set(it.productId, className);
+        if (page.length === 0 || offset + page.length >= (body?.result?.pagination?.total ?? 0)) break;
+        await sleep(REQUEST_DELAY_MS);
+      }
+    } catch (err) {
+      // 分類の取得に失敗しても巡回は止めない。該当商品は名前からの推測に回る。
+      console.error(`[${source.id}] category fetch failed for ${className}: ${err.message}`);
+    }
+  }
+  for (const item of items) item._officialCategory = byProduct.get(item.productId) ?? null;
+  console.log(`[${source.id}] official categories: ${items.filter((i) => i._officialCategory).length}/${items.length}`);
 }
 
 // 期間限定・アプリ会員価格といった値引きの種類は、l2s の flags.priceFlags に
@@ -1194,6 +1240,7 @@ async function extractViaApi(source, item, log = () => {}) {
   return {
     url,
     name: item?.name ?? productId,
+    officialCategory: item?._officialCategory ?? null,
     // 商品自身の区分表記(MEN / WOMEN / 男女兼用 / KIDS / BABY)。どの一覧で
     // 見つけたかより、商品ページに書いてある区分を正とする。
     // 男女兼用・ユニセックスはサイズ表記の区分(sizeGender: MEN/WOMEN)で振り分ける。
@@ -1535,7 +1582,7 @@ async function recordExtractedProduct(extracted, source, productRunState) {
     console.log(`[${source.id}] [${productId}] ${msg}`)
   );
 
-  const category = categorizeProduct(source.brand, extracted.name);
+  const category = extracted.officialCategory ?? categorizeProduct(source.brand, extracted.name);
   const eventType = classifyEventType({
     isNewProduct,
     previousPrice,
