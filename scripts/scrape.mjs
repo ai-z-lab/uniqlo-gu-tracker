@@ -29,6 +29,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { catalogSourcesFrom, regularPriceRows } from './regular-prices.mjs';
+import { lineTagsFrom, productLineRows } from './product-lines.mjs';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -1077,7 +1078,79 @@ async function discoverProductsViaApi(source) {
     await sleep(REQUEST_DELAY_MS);
   }
 
+  logLineFieldProbe(source, items);
+  await logDetailLineProbe(source, items);
   return { items: items.slice(0, cap), total };
+}
+
+// コラボ・ライン(UNIQLO:C / UNIQLO U / +J など)が一覧APIのどの項目に入って
+// いるかを調べる診断。バッジ表示の前に、実データで項目名を確かめるためのもの。
+// 1ソースにつき1回だけ、項目名の一覧と、ライン名らしき値を持つ項目を出す。
+const lineProbeDone = new Set();
+const detailProbeDone = new Set();
+
+// 一覧APIにライン名が無かったので、商品詳細APIにあるかを調べる。UNIQLO:C の
+// イージーワイドパンツ(487258)と UNIQLO U(487270)があれば優先して見る。
+// 項目の全パスと、productFlags の名前の一覧も出す(一部店舗商品以外の印も分かる)。
+async function logDetailLineProbe(source, items) {
+  if (detailProbeDone.has(source.brand) || items.length === 0) return;
+  detailProbeDone.add(source.brand);
+  const flagNames = new Map();
+  for (const item of items) {
+    for (const f of item?.representative?.flags?.productFlags ?? []) {
+      flagNames.set(f?.name ?? f?.code, (flagNames.get(f?.name ?? f?.code) ?? 0) + 1);
+    }
+  }
+  console.log(`::group::detail-probe ${source.brand}`);
+  console.log(`productFlags: ${[...flagNames].map(([k, v]) => `${k}×${v}`).join(', ') || '(なし)'}`);
+  const preferred = items.filter((i) => /48725[0-9]|48727[0-9]/.test(i.productId ?? ''));
+  const targets = [...preferred, ...items].slice(0, 3);
+  for (const item of targets) {
+    const url = `${brandOrigin(source.brand)}/jp/api/commerce/v5/ja/products/${item.productId}/price-groups/${item.priceGroup ?? '00'}/details.json`;
+    try {
+      const body = await getJson(url, listingPageUrl(source.brand));
+      const paths = new Map();
+      const walk = (v, path) => {
+        if (typeof v === 'string') {
+          if (LINE_PATTERN.test(v) || /sub.?brand|line|label/i.test(path)) paths.set(path, v.slice(0, 60));
+        } else if (Array.isArray(v)) v.slice(0, 10).forEach((x) => walk(x, `${path}[]`));
+        else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${k}` : k);
+      };
+      walk(body, '');
+      console.log(`  ${item.productId} ${item.name}: ${[...paths].map(([k, v]) => `${k}=${v}`).join(' ; ') || 'ヒットなし'}`);
+    } catch (err) {
+      console.log(`  ${item.productId}: ${err.message}`);
+    }
+  }
+  console.log('::endgroup::');
+}
+const LINE_PATTERN = /uniqlo\s*:?\s*[cu]\b|\+j|marni|jw\s*anderson|collab|コラボ|一部店舗|店舗限定|店舗のみ/i;
+function logLineFieldProbe(source, items) {
+  if (lineProbeDone.has(source.brand) || items.length === 0) return;
+  lineProbeDone.add(source.brand);
+  console.log(`::group::line-probe ${source.brand} (項目名)`);
+  console.log(`item keys: ${Object.keys(items[0]).join(', ')}`);
+  const hits = new Map();
+  const walk = (value, path, productId) => {
+    if (typeof value === 'string') {
+      if (LINE_PATTERN.test(value)) {
+        const entry = hits.get(path) ?? { values: new Set(), examples: [] };
+        entry.values.add(value);
+        if (entry.examples.length < 3) entry.examples.push(productId);
+        hits.set(path, entry);
+      }
+    } else if (Array.isArray(value)) {
+      value.slice(0, 20).forEach((v) => walk(v, `${path}[]`, productId));
+    } else if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) walk(v, path ? `${path}.${k}` : k, productId);
+    }
+  };
+  for (const item of items) walk(item, '', item.productId);
+  if (hits.size === 0) console.log('ライン名らしき値を持つ項目は見つからなかった');
+  for (const [path, { values, examples }] of hits) {
+    console.log(`  ${path}: ${[...values].slice(0, 8).join(' | ')} (例: ${examples.join(', ')})`);
+  }
+  console.log('::endgroup::');
 }
 
 // 期間限定・アプリ会員価格といった値引きの種類は、l2s の flags.priceFlags に
@@ -1717,6 +1790,63 @@ async function fetchKnownRegularPrices() {
     if (data.length < 1000) break;
   }
   return known;
+}
+
+// コラボ・特別ライン(UNIQLO : C / UNIQLO U / JW ANDERSON / UTのコラボ など)に属する
+// 商品を product_lines に記録する。ライン名は商品の一覧APIの返答に入っておらず、
+// 「特別コレクション」「UT」のタグで絞り込んだ一覧からだけ分かる。そこで、まず全商品の
+// 一覧の aggregations.tags でラインの種類を取り、ラインごとに絞り込んで商品コードを集める。
+// ラインの特集から商品が消えても行は消さない(終了後・復刻待ちでもバッジを残すため)。
+async function recordProductLines(sources, { dryRun = false } = {}) {
+  const brands = [...new Set(sources.map((s) => s.brand))];
+  const nowIso = new Date().toISOString();
+  let lines = 0;
+  let written = 0;
+
+  for (const brand of brands) {
+    const brandSources = sources.filter((s) => s.brand === brand);
+    const genderIds = [...new Set(brandSources.flatMap((s) => s.api?.genderIds ?? []))];
+    const url = `${brandOrigin(brand)}/jp/api/commerce/v5/ja/products/search?httpFailure=true`;
+    const referer = listingPageUrl(brand);
+    try {
+      // ライン(タグ)の一覧は、性別を指定した問い合わせでないと返ってこない。性別ごとに
+      // 引いて、ラインの種類を集める。メンズ・ウィメンズ・キッズでラインが違うため。
+      const genders = genderIds.length > 0 ? genderIds.map((g) => ({ genderIds: [g] })) : [{}];
+      const tagMap = new Map();
+      for (const gender of genders) {
+        const body = await postJson(url, { ...gender, flagCodes: [], offset: 0, limit: 1 }, referer);
+        const groups = (body?.result?.aggregations?.tags ?? []).map((g) => g.groupName).join(', ');
+        console.log(`[lines] ${brand} ${JSON.stringify(gender)}: タグのグループ: ${groups}`);
+        for (const tag of lineTagsFrom(body?.result?.aggregations?.tags)) tagMap.set(`${tag.group}:${tag.value}`, tag);
+      }
+      const tags = [...tagMap.values()];
+      console.log(`[lines] ${brand}: ライン ${tags.length}種`);
+      for (const tag of tags) {
+        const seen = new Map();
+        for (const gender of genders) {
+          const { items } = await discoverProductsViaApi({
+            brand,
+            api: { ...gender, flagCodes: [], tags: { [tag.group]: [tag.value] } },
+            maxProducts: 3000,
+            pageSize: 100,
+          });
+          for (const row of productLineRows({ brand, items, tag, nowIso })) seen.set(row.product_id, row);
+        }
+        const rows = [...seen.values()];
+        console.log(`[lines] ${brand} ${tag.group}:${tag.value} (${tag.label}): ${rows.length}件 例: ${rows.slice(0, 3).map((r) => r.product_id).join(', ')}`);
+        for (let i = 0; !dryRun && i < rows.length; i += 500) {
+          const { error } = await supabase.from('product_lines').upsert(rows.slice(i, i + 500), { onConflict: 'product_id,line_key', ignoreDuplicates: true });
+          if (error) throw error;
+        }
+        lines += 1;
+        written += rows.length;
+        await sleep(REQUEST_DELAY_MS);
+      }
+    } catch (err) {
+      console.log(`::warning title=product-lines::${brand} のライン記録に失敗: ${err?.message ?? err}`);
+    }
+  }
+  console.log(`::notice title=product-lines::ライン ${lines}種、商品 ${written}件を確認`);
 }
 
 async function recordRegularPrices(sources, productRunState, emptySourceIds) {
@@ -2734,9 +2864,182 @@ async function loadSources() {
   return JSON.parse(raw);
 }
 
+// コラボ・ライン診断。特集ページ(UNIQLO:C / UNIQLO U / GU×rokh など)をブラウザで
+// 開き、(1) ページ内のライン別リンク(名前とURL)、(2) 各ラインのページに載っている
+// 商品コードを出す。結果を見て config にラインのURL一覧を登録する。
+// 実行: workflow_dispatch の debug_url に collab-probe と入れる。
+const COLLAB_PROBE_TOKEN = 'collab-probe';
+const COLLAB_SEEDS = [
+  { brand: 'uniqlo', origin: 'https://www.uniqlo.com', paths: ['/jp/ja/women/special-collaboration', '/jp/ja/men/special-collaboration', '/jp/ja/kids/special-collaboration', '/jp/ja/baby/special-collaboration'] },
+  { brand: 'gu', origin: 'https://www.gu-global.com', paths: ['/jp/ja/women/special-collection', '/jp/ja/men/special-collection', '/jp/ja/kids/special-collection', '/jp/ja/feature/contents'] },
+];
+const COLLAB_LINK_PATTERN = /special-collab|special-collection|\/collaboration\/|feature\/contents/;
+
+async function collabOpen(page, url) {
+  await withTimeout(page.goto(url, { waitUntil: 'domcontentloaded', timeout: LISTING_NAV_TIMEOUT_MS }), LISTING_NAV_TIMEOUT_MS + 2_000, 'collab goto');
+  await page.waitForTimeout(LISTING_SETTLE_MS);
+  for (let i = 0; i < 6; i += 1) {
+    await page.mouse.wheel(0, 3000);
+    await page.waitForTimeout(700);
+  }
+}
+
+async function probeCollabPages(browser) {
+  const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'ja-JP' });
+  const page = await context.newPage();
+  for (const seed of COLLAB_SEEDS) {
+    const seen = new Set();
+    for (const path of seed.paths) {
+      const url = seed.origin + path;
+      console.log(`::group::collab-probe ${url}`);
+      try {
+        await collabOpen(page, url);
+        const links = await page.evaluate(() =>
+          [...document.querySelectorAll('a[href]')].map((a) => ({ text: (a.textContent || a.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ').slice(0, 60), href: a.href }))
+        );
+        const lineLinks = [...new Map(links.filter((l) => COLLAB_LINK_PATTERN.test(l.href)).map((l) => [l.href, l])).values()];
+        const html = await page.content();
+        const codes = [...new Set([...html.matchAll(/products\/(E\d{6}-\d{3})/g)].map((m) => m[1]))];
+        console.log(`title: ${await page.title()} / 商品コード ${codes.length}件 例: ${codes.slice(0, 4).join(', ')}`);
+        console.log(`ライン候補リンク ${lineLinks.length}件`);
+        for (const l of lineLinks.slice(0, 40)) console.log(`  ${l.text || '(テキストなし)'} -> ${l.href}`);
+        // ライン別ページの中身(商品コード)も数件ぶん見る。
+        for (const l of lineLinks.filter((x) => !seen.has(x.href) && x.href !== url).slice(0, 8)) {
+          seen.add(l.href);
+          try {
+            await collabOpen(page, l.href);
+            const h = await page.content();
+            const c = [...new Set([...h.matchAll(/products\/(E\d{6}-\d{3})/g)].map((m) => m[1]))];
+            console.log(`  [line] ${l.text} ${l.href}: 商品コード ${c.length}件 例: ${c.slice(0, 4).join(', ')}`);
+          } catch (err) {
+            console.log(`  [line] ${l.href}: ${err.message}`);
+          }
+        }
+      } catch (err) {
+        console.log(`取得失敗: ${err.message}`);
+      }
+      console.log('::endgroup::');
+    }
+  }
+  await context.close();
+}
+
+// 一覧APIの返答の形を調べる診断。ラインで絞り込む条件(facets/conditions など)が
+// 返答に含まれていないか、また絞り込みの候補になりそうな項目を総当たりで試す。
+// 実行: debug_url に search-shape-probe
+const SEARCH_SHAPE_PROBE_TOKEN = 'search-shape-probe';
+async function probeSearchShape() {
+  for (const brand of ['uniqlo', 'gu']) {
+    const origin = brandOrigin(brand);
+    const referer = listingPageUrl(brand);
+    const url = `${origin}/jp/api/commerce/v5/ja/products/search?httpFailure=true`;
+    const base = { genderIds: [brand === 'uniqlo' ? 1071 : 2256], flagCodes: ['discount'], offset: 0, limit: 1 };
+    console.log(`::group::search-shape ${brand}`);
+    try {
+      const body = await postJson(url, base, referer);
+      console.log(`top keys: ${Object.keys(body).join(', ')}`);
+      console.log(`result keys: ${Object.keys(body.result ?? {}).join(', ')}`);
+      for (const [k, v] of Object.entries(body.result ?? {})) {
+        if (k === 'items') continue;
+        console.log(`  result.${k}: ${JSON.stringify(v).slice(0, 1500)}`);
+      }
+      console.log(`item[0].representative: ${JSON.stringify(body.result?.items?.[0]?.representative).slice(0, 1200)}`);
+      console.log(`item[0].plds: ${JSON.stringify(body.result?.items?.[0]?.plds).slice(0, 400)} / l1Id=${body.result?.items?.[0]?.l1Id}`);
+    } catch (err) {
+      console.log(`失敗: ${err.message}`);
+    }
+    // 絞り込み用の一覧(aggregations)の中身と、商品ごとの pld(区分)の種類を調べる。
+    try {
+      const body = await postJson(url, { ...base, limit: 100 }, referer);
+      const agg = body?.result?.aggregations ?? {};
+      for (const [k, v] of Object.entries(agg)) {
+        const arr = Array.isArray(v) ? v : [];
+        console.log(`  aggregations.${k}: ${arr.length}件 ${JSON.stringify(arr.slice(0, 40).map((x) => x?.name ?? x?.code ?? x)).slice(0, 900)}`);
+      }
+      for (const g of agg.tags ?? []) {
+        console.log(`  tags group ${g.groupName}(${g.groupLocalizationName}) docCount=${g.docCount}: ${JSON.stringify((g.values ?? []).map((v) => `${v.name}=${v.localizationName}(${v.docCount})`)).slice(0, 700)}`);
+      }
+      const plds = new Map();
+      let offset = 0;
+      for (let page = 0; page < 8; page += 1) {
+        const b = await postJson(url, { ...base, offset, limit: 100 }, referer);
+        const its = b?.result?.items ?? [];
+        for (const it of its) for (const pl of it.plds ?? []) {
+          const key = `${pl.code}:${pl.name}`;
+          const e = plds.get(key) ?? { n: 0, ex: [] };
+          e.n += 1;
+          if (e.ex.length < 3) e.ex.push(`${it.productId} ${it.name}`);
+          plds.set(key, e);
+        }
+        offset += 100;
+        if (its.length < 100) break;
+      }
+      for (const [k, e] of plds) console.log(`  pld ${k} ×${e.n} 例: ${e.ex.join(' | ')}`);
+    } catch (err) {
+      console.log(`  aggregations/pld 調査失敗: ${err.message}`);
+    }
+    // aggregations.tags の special-collection / ut グループで絞り込む指定のしかたを探す。
+    // pagination.total が基準から変われば、その指定が効いている。
+    const tagGroup = brand === 'uniqlo' ? 'special-collection' : 'special-collection';
+    const tagValue = brand === 'uniqlo' ? 'uniqlo-c' : 'gu-rokh';
+    const noFlag = { genderIds: base.genderIds, offset: 0, limit: 1 };
+    const noFlagTotal = (await postJson(url, noFlag, referer).catch(() => null))?.result?.pagination?.total;
+    console.log(`  タグ絞り込み候補(フラグなし基準 total=${noFlagTotal})`);
+    const forms = {
+      'tags:[v]': { tags: [tagValue] },
+      'tags:[g:v]': { tags: [`${tagGroup}:${tagValue}`] },
+      'tags:[g/v]': { tags: [`${tagGroup}/${tagValue}`] },
+      'tags:{g:[v]}': { tags: { [tagGroup]: [tagValue] } },
+      'tags:[{groupName,values}]': { tags: [{ groupName: tagGroup, values: [tagValue] }] },
+      'tagNames:[v]': { tagNames: [tagValue] },
+      'tagIds:[v]': { tagIds: [tagValue] },
+      'specialCollection:[v]': { specialCollection: [tagValue] },
+      'specialCollections:[v]': { specialCollections: [tagValue] },
+      'specialCollectionNames:[v]': { specialCollectionNames: [tagValue] },
+      '[g]:[v]': { [tagGroup]: [tagValue] },
+      'filters:{g:[v]}': { filters: { [tagGroup]: [tagValue] } },
+      'tagFilters:[{name,values}]': { tagFilters: [{ name: tagGroup, values: [tagValue] }] },
+      'aggregations:{tags:[v]}': { aggregations: { tags: [tagValue] } },
+    };
+    for (const [label, extra] of Object.entries(forms)) {
+      try {
+        const body = await postJson(url, { ...noFlag, ...extra }, referer);
+        const total = body?.result?.pagination?.total;
+        const ex = (body?.result?.items ?? []).slice(0, 2).map((i) => `${i.productId} ${i.name}`).join(' | ');
+        console.log(`    ${label} -> total=${total}${total !== noFlagTotal ? '  <-- 変化 ' + ex : ''}`);
+      } catch (err) {
+        console.log(`    ${label}: ${err.message}`);
+      }
+    }
+    // 候補の項目名を足して、件数(pagination.total)が変わるかを見る。変われば絞り込めている。
+    const baseTotal = (await postJson(url, base, referer).catch(() => null))?.result?.pagination?.total;
+    console.log(`基準 total=${baseTotal}`);
+    const candidates = ['specialCollectionIds', 'collaborationIds', 'collectionIds', 'subBrandIds', 'brandIds', 'conceptIds', 'lineIds', 'categoryIds', 'l1Ids', 'l2Ids', 'themeIds', 'specialIds', 'campaignIds', 'productFlagCodes', 'productFlags', 'flagCodes2'];
+    for (const key of candidates) {
+      try {
+        const body = await postJson(url, { ...base, [key]: [1] }, referer);
+        const total = body?.result?.pagination?.total;
+        console.log(`  ${key}=[1] -> total=${total}${total !== baseTotal ? '  <-- 変化' : ''}`);
+      } catch (err) {
+        console.log(`  ${key}: ${err.message}`);
+      }
+    }
+    console.log('::endgroup::');
+  }
+}
+
 async function main() {
   if (DEBUG_URL) {
     const token = DEBUG_URL.trim();
+    if (token === 'lines-dry') {
+      // ライン記録だけを、DBに書かずに試す(ログでライン名と件数を確認する用)。
+      await recordProductLines(await loadSources(), { dryRun: true });
+      return;
+    }
+    if (token === SEARCH_SHAPE_PROBE_TOKEN) {
+      await probeSearchShape();
+      return;
+    }
     if (token === CLEANUP_REVISIT_TOKEN) {
       await cleanupRevisitTestRows();
       return;
@@ -2759,6 +3062,7 @@ async function main() {
     }
     await withBrowser(async (browser) => {
       if (token === API_PROBE_TOKEN) await probeApis(browser);
+      else if (token === COLLAB_PROBE_TOKEN) await probeCollabPages(browser);
       else await debugProducts(browser, DEBUG_URL);
     });
     return;
@@ -2800,6 +3104,14 @@ async function main() {
     await recordRegularPrices(sources, productRunState, totals.emptySources);
   } catch (err) {
     console.log(`::warning title=regular-prices::通常価格の記録に失敗: ${err?.message ?? err}`);
+  }
+
+  // コラボ・特別ラインの記録。表(product_lines)がまだ無い、通信が失敗したなどでも
+  // 巡回全体は成功扱いにする。
+  try {
+    await recordProductLines(sources);
+  } catch (err) {
+    console.log(`::warning title=product-lines::ライン記録に失敗: ${err?.message ?? err}`);
   }
 
   console.log(
