@@ -1003,8 +1003,31 @@ function productPageUrl(brand, productId, priceGroup) {
   return priceGroup ? `${base}/${priceGroup}` : base;
 }
 
+// 一時的な通信失敗(fetch failed / タイムアウト / 429 / 5xx)は数回やり直す。
+// 以前は1回失敗するとその商品はその日の記録から丸ごと落ち、サイトには出ているのに
+// トラッカーの初検出が翌日以降にずれていた(京都限定フリースの取りこぼし)。
+const FETCH_ATTEMPTS = 4;
+const FETCH_RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
+const FETCH_TIMEOUT_MS = 30_000;
+
+async function fetchWithRetry(url, options) {
+  let lastError;
+  for (let attempt = 0; attempt < FETCH_ATTEMPTS; attempt += 1) {
+    try {
+      const res = await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+      // 最後の試行は応答をそのまま返し、呼び出し側が URL 付きで `HTTP <status>` を投げる。
+      if ((res.status !== 429 && res.status < 500) || attempt === FETCH_ATTEMPTS - 1) return res;
+      lastError = new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      lastError = err;
+    }
+    if (attempt < FETCH_ATTEMPTS - 1) await sleep(FETCH_RETRY_DELAYS_MS[attempt]);
+  }
+  throw lastError;
+}
+
 async function postJson(url, body, referer) {
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: {
       'User-Agent': USER_AGENT,
@@ -1020,7 +1043,7 @@ async function postJson(url, body, referer) {
 }
 
 async function getJson(url, referer) {
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ja-JP,ja;q=0.9', Referer: referer },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} GET ${url}`);
@@ -1606,7 +1629,9 @@ async function processSource(source, productRunState) {
     `[${source.id}] discovered ${items.length} product(s)` + (total != null ? ` of ${total} the API reports` : '')
   );
   if (items.length === 0) {
-    console.error(`[${source.id}] !! このソースからは1件も発見できませんでした (config/sources.json の api を確認)`);
+    const msg = `[${source.id}] このソースからは1件も発見できませんでした (config/sources.json の api を確認)`;
+    if (source.allowEmpty) console.log(`${msg} — allowEmpty のため正常扱い`);
+    else console.error(`!! ${msg}`);
   } else if (total != null && items.length < total) {
     console.log(`[${source.id}] capped at ${items.length} of ${total} (maxProducts)`);
   }
@@ -1654,6 +1679,11 @@ async function processSource(source, productRunState) {
       }
     }
     await sleep(REQUEST_DELAY_MS);
+  }
+
+  if (failed > 0) {
+    // ログを開かなくても気づけるよう、実行の概要に注釈として残す。
+    console.log(`::warning title=scrape-failed::[${source.id}] ${failed}件の商品を記録できませんでした(次回の巡回まで検出が遅れます)`);
   }
 
   console.log(
@@ -2751,7 +2781,9 @@ async function main() {
     totals.priceChanged += result.priceChanged;
     totals.skipped += result.skipped;
     totals.failed += result.failed;
-    if (result.discovered === 0) totals.emptySources.push(source.id);
+    // allowEmpty: そのソースが0件でも正常(例: GU キッズの期間限定は該当商品が無い
+    // 時期が長い)。毎回ジョブが赤くなると、本当の失敗に気づけなくなる。
+    if (result.discovered === 0 && !source.allowEmpty) totals.emptySources.push(source.id);
   }
 
   // 一覧から外れた既知商品の値上げ確認。失敗しても巡回全体は成功扱いにする
