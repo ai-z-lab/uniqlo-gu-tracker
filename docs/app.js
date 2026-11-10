@@ -100,14 +100,14 @@ const CATEGORY_ORDER = {
 // 曜日タブの「すべて」。数値(0=日〜6=土)と混ざらない値にしておく。
 const ALL_WEEKDAYS = "all";
 
-// 商品の並べ方。"table" は1商品1行の表、"cards" は従来のカード。
+// 商品の並べ方。"cards" がカード（初期表示）、"table" は1商品1行の表。
 const VIEW_STORAGE_KEY = "uniqlo-gu-tracker:view";
 function loadView() {
   try {
     const saved = localStorage.getItem(VIEW_STORAGE_KEY);
-    return saved === "cards" ? "cards" : "table";
+    return saved === "table" ? "table" : "cards";
   } catch {
-    return "table";
+    return "cards";
   }
 }
 function saveView(view) {
