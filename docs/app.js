@@ -639,6 +639,22 @@ function buildIndex(rows) {
     idx[brand].all[eventType] ??= {};
     idx[brand].all[eventType][category] ??= [];
     idx[brand].all[eventType][category].push(entry);
+
+    // 初値下げは「最初に値下げ一覧で見つけた日」の記録で、翌日以降の巡回で最新の行が
+    // 'markdown' に変わっても、いま値下げ中ならその日の初値下げとして残す。
+    // 最新の行だけで振り分けると、初値下げの欄には「今日初めて見つけた商品」しか
+    // 残らず、前日までの初値下げが消えてしまう。値下げの欄にも残す(同じ商品が両方に出る)。
+    if (eventType === "markdown" && history[0]?.event_type === "first_markdown") {
+      const firstEntry = { ...entry, latest: { ...latest, event_type: "first_markdown" }, eventType: "first_markdown" };
+      for (const g of genderKeys) {
+        idx[brand][g].first_markdown ??= {};
+        idx[brand][g].first_markdown[category] ??= [];
+        idx[brand][g].first_markdown[category].push(firstEntry);
+      }
+      idx[brand].all.first_markdown ??= {};
+      idx[brand].all.first_markdown[category] ??= [];
+      idx[brand].all.first_markdown[category].push(firstEntry);
+    }
   }
   return idx;
 }
