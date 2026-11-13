@@ -1717,13 +1717,70 @@ function appendTodaySection(container, bucket, crawl) {
   container.appendChild(section);
 }
 
-// 検索語の正規化。全角/半角・大文字小文字・ひらがな/カタカナの違いで外さない。
+// 検索語の正規化。全角/半角・大文字小文字・ひらがな/カタカナ・長音や記号の違いで外さない。
 function normalizeQuery(text) {
   return String(text ?? "")
     .normalize("NFKC")
     .toLowerCase()
     .replace(/[\u3041-\u3096]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60))
-    .replace(/\s+/g, "");
+    .replace(/[\s\u30fb\u30fc\-_/・.,、。()（）［］\[\]]+/g, "");
+}
+
+// 呼び方の違い(略称・通称・表記ゆれ)。同じグループはどれで検索しても互いに当たる。
+const SEARCH_SYNONYM_GROUPS = [
+  ["ウルトラライトダウン", "ULD", "ライトダウン"],
+  ["スウェット", "トレーナー", "スエット"],
+  ["パーカー", "パーカ", "フーディ", "フーディー", "フード付き"],
+  ["ヒートテック", "HEATTECH"],
+  ["エアリズム", "AIRism"],
+  ["フリース", "FLEECE", "ボア"],
+  ["ジーンズ", "デニム", "ジーパン"],
+  ["Tシャツ", "ティーシャツ", "半袖"],
+  ["ワイドフィット", "ワイド"],
+  ["ストレッチ", "伸縮"],
+  ["ブラトップ", "ブラ"],
+  ["ソックス", "靴下"],
+  ["ジャケット", "ブルゾン", "アウター"],
+  ["レギンス", "スパッツ", "タイツ"],
+  ["バッグ", "鞄", "カバン"],
+].map((g) => g.map(normalizeQuery));
+
+function bigramsOf(key) {
+  const set = new Set();
+  for (let i = 0; i < key.length - 1; i++) set.add(key.slice(i, i + 2));
+  return set;
+}
+
+// 検索語1つ(空白で区切った単位)が、商品の検索用文字列に当たるか。
+// 1) そのまま含む 2) 同義語のどれかを含む 3) 3文字以上なら、2文字ずつの一致率で
+// 語順の入れ替わり・1文字の違いを許す。
+function tokenMatches(token, hay, hayBigrams) {
+  if (hay.includes(token)) return true;
+  for (const group of SEARCH_SYNONYM_GROUPS) {
+    if (group.some((m) => m === token || (token.length >= 3 && m.includes(token)))) {
+      if (group.some((m) => hay.includes(m))) return true;
+    }
+  }
+  if (token.length < 3) return false;
+  const tb = bigramsOf(token);
+  let hit = 0;
+  for (const g of tb) if (hayBigrams.has(g)) hit++;
+  return tb.size > 0 && hit / tb.size >= 0.75;
+}
+
+// 検索語を空白で区切り、すべての語が商品名・カテゴリ・性別のどこかに当たる商品を残す。
+function makeProductMatcher(rawQuery) {
+  const tokens = String(rawQuery ?? "")
+    .split(/[\s\u3000]+/)
+    .map(normalizeQuery)
+    .filter(Boolean);
+  if (!tokens.length) return null;
+  return (p) => {
+    const l = p.latest || {};
+    const hay = normalizeQuery(`${l.product_name ?? ""} ${p.category ?? l.category ?? ""} ${l.product_id ?? ""}`);
+    const hayBigrams = bigramsOf(hay);
+    return tokens.every((t) => tokenMatches(t, hay, hayBigrams));
+  };
 }
 
 function countBuyable(byCategory) {
@@ -1830,13 +1887,13 @@ function renderContent() {
   latestCrawlDay = crawl?.latestDay ?? null;
 
   // カテゴリと検索語で絞った bucket。以降のセクションはすべてこれを使う。
-  const query = normalizeQuery(state.query);
+  const query = makeProductMatcher(state.query);
   bucket = {};
   for (const e of EVENT_TYPE_CONFIG) {
     const byCat = {};
     for (const [cat, list] of Object.entries(rawBucket[e.key] || {})) {
       if (state.category && cat !== state.category) continue;
-      const kept = query ? list.filter((p) => normalizeQuery(p.latest.product_name).includes(query)) : list;
+      const kept = query ? list.filter(query) : list;
       if (kept.length) byCat[cat] = kept;
     }
     bucket[e.key] = byCat;
