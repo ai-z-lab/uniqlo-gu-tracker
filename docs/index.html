@@ -124,6 +124,15 @@
       gap: 0.5rem;
     }
 
+    .sort-row {
+      margin-top: 0.4rem;
+    }
+
+    .category-filter.sort-order {
+      flex: 1 1 auto;
+      max-width: none;
+    }
+
     .search {
       flex: 1 1 auto;
       min-width: 0;
@@ -1411,6 +1420,9 @@
       <div class="toolbar-row">
         <input id="search" class="search" type="search" placeholder="商品名で検索(例: ヒートテック)" autocomplete="off" enterkeyhint="search" aria-label="商品名で検索">
         <select id="category-filter" class="category-filter" aria-label="カテゴリで絞り込む"></select>
+      </div>
+      <div class="toolbar-row sort-row">
+        <select id="sort-order" class="category-filter sort-order" aria-label="並べ替え"></select>
       </div>
       <div id="section-tabs" class="section-tabs" role="group" aria-label="表示する一覧"></div>
     </div>

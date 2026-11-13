@@ -8,6 +8,7 @@ const updatedEl = document.getElementById("updated");
 const toolbarEl = document.getElementById("toolbar");
 const searchEl = document.getElementById("search");
 const categoryFilterEl = document.getElementById("category-filter");
+const sortOrderEl = document.getElementById("sort-order");
 const sectionTabsEl = document.getElementById("section-tabs");
 const contentEl = document.getElementById("content");
 const brandTabsEl = document.getElementById("brand-tabs");
@@ -135,7 +136,35 @@ function saveMarkdownGroup(mode) {
   }
 }
 
-let state = { brand: "uniqlo", gender: "all", weekday: ALL_WEEKDAYS, view: loadView(), markdownGroup: loadMarkdownGroup(), section: "today", query: "", category: null };
+// 一覧の並べ替え。既定は従来どおりの並び(日付・カテゴリ・段階でまとめた順)。
+// 既定以外を選ぶと、まとめ方に関係なく、いま見ている一覧を1つにまとめて並べ替える。
+const SORT_STORAGE_KEY = "uniqlo-gu-tracker:sort";
+const SORT_OPTIONS = [
+  ["default", "並べ替え：既定"],
+  ["new", "新しい順（値段が変わった日）"],
+  ["price_asc", "値段が安い順"],
+  ["price_desc", "値段が高い順"],
+  ["off_amount", "値下げ額が大きい順"],
+  ["off_rate", "値下げ率が高い順"],
+];
+const SORT_LABELS = Object.fromEntries(SORT_OPTIONS);
+function loadSort() {
+  try {
+    const saved = localStorage.getItem(SORT_STORAGE_KEY);
+    return saved && saved in SORT_LABELS ? saved : "default";
+  } catch {
+    return "default";
+  }
+}
+function saveSort(sort) {
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, sort);
+  } catch {
+    // 保存できない環境でも、その場の切り替えは効く。
+  }
+}
+
+let state = { brand: "uniqlo", gender: "all", weekday: ALL_WEEKDAYS, view: loadView(), markdownGroup: loadMarkdownGroup(), sort: loadSort(), section: "today", query: "", category: null };
 let latestCrawlDay = null; // 最新の巡回日(JST)。この日に動いたカードを光らせる
 let index = null; // brand -> gender -> event_type -> category -> [{ latest, history }]
 // 値下げ前の通常価格(product_id -> 円)。スクレイパーが、値下げ・期間限定の一覧に
@@ -1212,8 +1241,36 @@ function stageBreakdownOf(products) {
     .join("・");
 }
 
+// 値段が最後に変わった日時。変わった記録がなければ、最初に見つけた日時。
+function changedAtOf(product) {
+  const h = product.history;
+  for (let i = h.length - 1; i > 0; i--) if (h[i].price !== h[i - 1].price) return h[i].scraped_at;
+  return h[0].scraped_at;
+}
+
+// 選んでいる並べ替えで並べ直した配列を返す(既定のときはそのまま)。
+// 値下げ前の価格が分からない商品は、値下げ額・率の並べ替えでは最後に回す。
+function sortProductsForDisplay(products) {
+  if (state.sort === "default") return products;
+  const off = (p) => {
+    const original = originalPriceOf(p.latest);
+    return original == null ? null : { amount: original - p.latest.price, rate: 1 - p.latest.price / original };
+  };
+  const desc = (x, y) => (x == null ? 1 : 0) - (y == null ? 1 : 0) || (x == null ? 0 : y - x);
+  const compare = {
+    new: (a, b) => desc(new Date(changedAtOf(a)).getTime(), new Date(changedAtOf(b)).getTime()),
+    price_asc: (a, b) => a.latest.price - b.latest.price,
+    price_desc: (a, b) => b.latest.price - a.latest.price,
+    off_amount: (a, b) => desc(off(a)?.amount, off(b)?.amount),
+    off_rate: (a, b) => desc(off(a)?.rate, off(b)?.rate),
+  }[state.sort];
+  // 未確認(直近の巡回で見つからなかった)も混ぜて、選んだ基準どおりに並べる(カードのバッジで区別できる)。
+  return [...products].sort(compare);
+}
+
 // 商品の一覧を、選んでいる表示(表/カード)で組み立てる。
-function buildProductList(products) {
+function buildProductList(rawProducts) {
+  const products = sortProductsForDisplay(rawProducts);
   if (state.view === "table") return renderTable(products);
   const grid = document.createElement("div");
   grid.className = "grid";
@@ -1848,7 +1905,9 @@ function renderContent() {
     // 既定は直近の日付。「今日は何が値下げになったか」がこのダッシュボードを
     // 開く理由なので、全期間を混ぜた一覧より先にその日の分を出す(期間限定は
     // 今週の分)。値上げだけは「すべて」から。
-    let selectedDate = DEFAULT_TO_LATEST_DATE.has(eventConfig.key) ? (dateEntries[0]?.key ?? null) : null;
+    // 並べ替え中は、直近の日付だけに絞らず、全期間をまとめて並べる(日付のチップで絞れる)。
+    let selectedDate =
+      state.sort === "default" && DEFAULT_TO_LATEST_DATE.has(eventConfig.key) ? (dateEntries[0]?.key ?? null) : null;
 
     const renderGroups = () => {
       groupsHost.innerHTML = "";
@@ -1868,7 +1927,14 @@ function renderContent() {
         `${shownBuyable.length}件` +
         (shownUnbuyable > 0 ? `(ほかに終了・在庫なし ${shownUnbuyable}件)` : "");
 
-      if (eventConfig.key === "markdown" && selectedDate === null && state.markdownGroup === "date") {
+      if (state.sort !== "default") {
+        // 並べ替え中は、日付やカテゴリで分けず、いま見ている商品を1つの一覧にして並べる。
+        appendProductGroup(groupsHost, `すべて（${SORT_LABELS[state.sort]}）`, shown, {
+          sortByStage: false,
+          includeHidden: pastPeriod,
+          open: true,
+        });
+      } else if (eventConfig.key === "markdown" && selectedDate === null && state.markdownGroup === "date") {
         // 値下げは「いつ下がったか」が主軸。段階でまとめると、ある日に何が
         // 下がったかを見るのに段階グループを全部開いて回ることになる。
         // 日付ごと(新しい順)にまとめ、段階は見出しの内訳とカードのバッジで読む。
@@ -2235,6 +2301,19 @@ searchEl.addEventListener("input", () => {
     state = { ...state, query: searchEl.value };
     renderContent();
   }, 200);
+});
+
+for (const [value, text] of SORT_OPTIONS) {
+  const opt = document.createElement("option");
+  opt.value = value;
+  opt.textContent = text;
+  sortOrderEl.appendChild(opt);
+}
+sortOrderEl.value = state.sort;
+sortOrderEl.addEventListener("change", () => {
+  state = { ...state, sort: sortOrderEl.value in SORT_LABELS ? sortOrderEl.value : "default" };
+  saveSort(state.sort);
+  renderContent();
 });
 
 categoryFilterEl.addEventListener("change", () => {
