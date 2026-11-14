@@ -1745,6 +1745,24 @@ const SEARCH_SYNONYM_GROUPS = [
   ["バッグ", "鞄", "カバン"],
 ].map((g) => g.map(normalizeQuery));
 
+// 一方向の言い換え(広い言葉 → 当たってほしい商品名)。「肌着」で探したらヒートテックやエアリズムも
+// 出したいが、「ヒートテック」で探してエアリズムは出さない、という使い方のため同義語とは分ける。
+const SEARCH_BROAD_TERMS = {
+  "肌着": ["ヒートテック", "エアリズム", "インナー", "ブラトップ", "ブラキャミ"],
+  "インナー": ["ヒートテック", "エアリズム", "ブラトップ", "ブラキャミ"],
+  "下着": ["ヒートテック", "エアリズム", "ブラトップ", "ブラキャミ", "ボクサー", "ショーツ", "トランクス", "ブリーフ"],
+  "防寒": ["ヒートテック", "ウルトラウォーム", "フリース", "ダウン", "ボア", "ウォーム"],
+  "あったか": ["ヒートテック", "ウルトラウォーム", "フリース", "ダウン", "ボア", "ウォーム"],
+  "暖かい": ["ヒートテック", "ウルトラウォーム", "フリース", "ダウン", "ボア", "ウォーム"],
+  "涼しい": ["エアリズム", "ドライ", "メッシュ", "クール"],
+  "ズボン": ["パンツ", "ジーンズ", "チノ", "スラックス", "ジョガー", "レギンス"],
+  "上着": ["ジャケット", "コート", "ブルゾン", "ダウン", "パーカ", "カーディガン"],
+  "アウター": ["ジャケット", "コート", "ブルゾン", "ダウン", "パーカ", "フリース"],
+  "ルームウェア": ["ラウンジ", "パジャマ", "スウェット", "リラコ"],
+  "部屋着": ["ラウンジ", "パジャマ", "スウェット", "リラコ", "ルームウェア"],
+}
+const SEARCH_BROAD_NORMALIZED = Object.entries(SEARCH_BROAD_TERMS).map(([k, v]) => [normalizeQuery(k), v.map(normalizeQuery)]);
+
 function bigramsOf(key) {
   const set = new Set();
   for (let i = 0; i < key.length - 1; i++) set.add(key.slice(i, i + 2));
@@ -1760,6 +1778,9 @@ function tokenMatches(token, hay, hayBigrams) {
     if (group.some((m) => m === token || (token.length >= 3 && m.includes(token)))) {
       if (group.some((m) => hay.includes(m))) return true;
     }
+  }
+  for (const [k, targets] of SEARCH_BROAD_NORMALIZED) {
+    if (k === token && targets.some((m) => hay.includes(m))) return true;
   }
   if (token.length < 3) return false;
   const tb = bigramsOf(token);
