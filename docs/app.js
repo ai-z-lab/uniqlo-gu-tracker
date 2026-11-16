@@ -171,6 +171,8 @@ let index = null; // brand -> gender -> event_type -> category -> [{ latest, his
 // 載る前の商品の価格を毎朝記録している(regular_prices 表)。UNIQLO は値下げした日から
 // 定価欄も書き換えてしまうので、元の価格を出せるのはこの記録があるときだけ。
 let regularPrices = new Map();
+// 感謝祭など「公式が先行公開している、まだ始まっていない価格」。docs/preview.json から読む。
+let previewData = null;
 // コラボ・特別ライン(UNIQLO : C など)。product_id -> ライン名の配列(product_lines 表)。
 // 同じ商品名でもラインが違う別商品があるため、カードにライン名を出して区別する。
 let productLines = new Map();
@@ -1831,7 +1833,9 @@ function renderToolbar(rawBucket, bucket, crawl) {
   }
   categoryFilterEl.value = state.category ?? "";
 
+  const previewCount = previewItemsFor(state.brand, state.gender).length;
   const tabs = [
+    ...(previewCount > 0 ? [{ key: "preview", label: "感謝祭 先行", count: previewCount }] : []),
     { key: "today", label: "今日", count: crawl ? todayChangesOf(bucket, crawl.latestDay).filter((p) => !p.hidden).length : 0 },
     ...EVENT_TYPE_CONFIG.map((e) => ({ key: e.key, label: sectionLabelOf(e), count: countBuyable(bucket[e.key]) })),
     { key: "trend", label: "曜日の傾向", count: null },
@@ -1861,6 +1865,98 @@ function renderToolbar(rawBucket, bucket, crawl) {
     state.gender === "all"
       ? "「値下げ」の件数には「初値下げ」の商品も含みます。ユニセックス商品はメンズとウィメンズの両方に入るため、性別ごとの合計は全体より多くなります。"
       : "「値下げ」の件数には「初値下げ」の商品も含みます。ユニセックス商品はメンズとウィメンズの両方に入ります。";
+}
+
+async function fetchPreview() {
+  try {
+    const res = await fetch(`preview.json?d=${Math.floor(Date.now() / 600000)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data && Array.isArray(data.items) ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+// 表示中のブランド・性別に当てはまる先行公開の商品。期間(until)を過ぎたら出さない。
+function previewItemsFor(brand, gender) {
+  if (!previewData || previewData.brand !== brand) return [];
+  if (previewData.until && jstDayOf(new Date()) > previewData.until) return [];
+  return previewData.items.filter((it) => gender === "all" || it.gender === gender);
+}
+
+function appendPreviewSection(container) {
+  const items = previewItemsFor(state.brand, state.gender);
+  const section = document.createElement("section");
+  section.className = "section";
+  section.style.setProperty("--status-color", "var(--status-limited)");
+  const header = document.createElement("div");
+  header.className = "section-header";
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = `${previewData.title}(${previewData.period})`;
+  const count = document.createElement("span");
+  count.className = "count";
+  count.textContent = `${items.length}件`;
+  header.appendChild(label);
+  header.appendChild(count);
+  section.appendChild(header);
+
+  const note = document.createElement("p");
+  note.className = "count-note";
+  note.textContent = `${previewData.note}(確認 ${previewData.checked.slice(5).replace("-", "/")})`;
+  section.appendChild(note);
+
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  const fmt = new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY", maximumFractionDigits: 0 });
+  for (const it of items) {
+    const card = document.createElement("a");
+    card.className = "card";
+    card.href = it.url;
+    card.target = "_blank";
+    card.rel = "noopener noreferrer";
+
+    const topRow = document.createElement("div");
+    topRow.className = "top-row";
+    const title = document.createElement("h2");
+    title.textContent = it.name;
+    topRow.appendChild(title);
+    const badge = document.createElement("span");
+    badge.className = "status-badge";
+    badge.style.setProperty("--status-color", "var(--status-limited)");
+    badge.textContent = "11/20から";
+    topRow.appendChild(badge);
+    card.appendChild(topRow);
+
+    const priceRow = document.createElement("div");
+    priceRow.className = "price-row";
+    const price = document.createElement("span");
+    price.className = "price";
+    price.textContent = fmt.format(it.price);
+    priceRow.appendChild(price);
+    const was = document.createElement("span");
+    was.className = "was-price";
+    was.textContent = `通常 ${fmt.format(it.normal)}`;
+    priceRow.appendChild(was);
+    const off = document.createElement("span");
+    off.className = "discount";
+    off.textContent = `${Math.round((1 - it.price / it.normal) * 100)}%OFF`;
+    priceRow.appendChild(off);
+    card.appendChild(priceRow);
+
+    const facts = document.createElement("div");
+    facts.className = "facts";
+    const fact = document.createElement("span");
+    fact.className = "fact";
+    fact.textContent = "アプリ会員 感謝価格";
+    facts.appendChild(fact);
+    card.appendChild(facts);
+
+    grid.appendChild(card);
+  }
+  section.appendChild(grid);
+  container.appendChild(section);
 }
 
 function appendSearchResults(container, bucket) {
@@ -1943,6 +2039,13 @@ function renderContent() {
 
   // 一度に1セクションだけ出す。全部を縦に並べると、見たい一覧まで長く
   // スクロールすることになる(上のタブで切り替える)。
+  if (state.section === "preview") {
+    if (previewItemsFor(state.brand, state.gender).length > 0) {
+      appendPreviewSection(contentEl);
+      return;
+    }
+    state = { ...state, section: "today" };
+  }
   if (state.section === "today") {
     appendTodaySection(contentEl, bucket, crawl);
     return;
@@ -2360,6 +2463,7 @@ async function fetchProductLines() {
 async function main() {
   const regularPromise = fetchRegularPrices();
   const linesPromise = fetchProductLines();
+  const previewPromise = fetchPreview();
   const { rows: data, error } = await fetchPriceEvents();
 
   if (error) {
@@ -2376,6 +2480,7 @@ async function main() {
 
   regularPrices = await regularPromise;
   productLines = await linesPromise;
+  previewData = await previewPromise;
   statusEl.textContent = "";
   renderUpdated(data);
   index = buildIndex(data);
