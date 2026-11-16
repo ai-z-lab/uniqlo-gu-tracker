@@ -1,0 +1,106 @@
+{
+  "title": "感謝祭 先行公開",
+  "checked": "2026-11-17",
+  "note": "GU公式の「感謝祭予告！」ページに先行公開されている、アプリ会員の感謝価格です。感謝価格はバナー画像から読み取った値、通常価格は公式の価格データと一致を確認しました。",
+  "period": "11/20(金)〜11/26(木)",
+  "until": "2026-11-26",
+  "brand": "gu",
+  "items": [
+    {
+      "gender": "women",
+      "name": "3Dバレルジーンズ",
+      "productId": "E360647-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E360647-000/00",
+      "normal": 2990,
+      "price": 2490
+    },
+    {
+      "gender": "women",
+      "name": "フラッフィージップアップブルゾン",
+      "productId": "E360822-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E360822-000/00",
+      "normal": 3990,
+      "price": 2990
+    },
+    {
+      "gender": "women",
+      "name": "パフィータッチニットクルーネックカーディガン",
+      "productId": "E360549-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E360549-000/00",
+      "normal": 2990,
+      "price": 1990
+    },
+    {
+      "gender": "women",
+      "name": "フェイクムートンショートブーツ",
+      "productId": "E360868-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E360868-000/00",
+      "normal": 2990,
+      "price": 1990
+    },
+    {
+      "gender": "women",
+      "name": "ウォームパデッドブルゾン",
+      "productId": "E360434-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E360434-000/00",
+      "normal": 5990,
+      "price": 4990
+    },
+    {
+      "gender": "women",
+      "name": "ウォームリブタートルネックT(長袖)",
+      "productId": "E360579-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E360579-000/00",
+      "normal": 1290,
+      "price": 990
+    },
+    {
+      "gender": "men",
+      "name": "ヘビーウェイトスウェットコクーンパーカ",
+      "productId": "E360458-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E360458-000/00",
+      "normal": 2990,
+      "price": 1990
+    },
+    {
+      "gender": "men",
+      "name": "パフィータッチニットヘンリーネックセーター",
+      "productId": "E361739-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E361739-000/00",
+      "normal": 2990,
+      "price": 1990
+    },
+    {
+      "gender": "men",
+      "name": "ウォームパデッドパーカ",
+      "productId": "E360533-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E360533-000/00",
+      "normal": 5990,
+      "price": 4990
+    },
+    {
+      "gender": "men",
+      "name": "3Dバレルジーンズ",
+      "productId": "E361123-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E361123-000/00",
+      "normal": 2990,
+      "price": 2490
+    },
+    {
+      "gender": "kids",
+      "name": "KIDSパデッドジップアップパーカ",
+      "productId": "E361835-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E361835-000/00",
+      "normal": 4990,
+      "price": 2990
+    },
+    {
+      "gender": "kids",
+      "name": "GIRLSパフィータッチニットセーター(フラワー)",
+      "productId": "E360506-000",
+      "url": "https://www.gu-global.com/jp/ja/products/E360506-000/00",
+      "normal": 1990,
+      "price": 1490
+    }
+  ]
+}
