@@ -1849,6 +1849,18 @@ function renderToolbar(rawBucket, bucket, crawl) {
     btn.setAttribute("aria-pressed", String(on));
     sectionTabsEl.appendChild(btn);
   }
+  // 件数の足し算が合わない理由(初値下げは値下げにも含む・ユニセックスは男女の両方に入る)を、短く添える。
+  let noteEl = document.getElementById("count-note");
+  if (!noteEl) {
+    noteEl = document.createElement("p");
+    noteEl.id = "count-note";
+    noteEl.className = "count-note";
+    sectionTabsEl.insertAdjacentElement("afterend", noteEl);
+  }
+  noteEl.textContent =
+    state.gender === "all"
+      ? "「値下げ」の件数には「初値下げ」の商品も含みます。ユニセックス商品はメンズとウィメンズの両方に入るため、性別ごとの合計は全体より多くなります。"
+      : "「値下げ」の件数には「初値下げ」の商品も含みます。ユニセックス商品はメンズとウィメンズの両方に入ります。";
 }
 
 function appendSearchResults(container, bucket) {
