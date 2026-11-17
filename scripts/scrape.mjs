@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { catalogSourcesFrom, regularPriceRows } from './regular-prices.mjs';
 import { lineTagsFrom, productLineRows } from './product-lines.mjs';
+import { productFlagRows, STORE_FLAGS } from './product-flags.mjs';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -1849,6 +1850,42 @@ async function recordProductLines(sources, { dryRun = false } = {}) {
   console.log(`::notice title=product-lines::ライン ${lines}種、商品 ${written}件を確認`);
 }
 
+// 販売場所に制限がある商品(一部店舗・オンライン限定)を product_flags に記録する。
+// 公式の商品データのフラグで絞り込んだ一覧から取る。確認できた商品の checked_at を毎回更新し、
+// 画面は古い行(フラグが外れた商品)を無視する。
+async function recordProductFlags(sources) {
+  const brands = [...new Set(sources.map((s) => s.brand))];
+  const nowIso = new Date().toISOString();
+  for (const brand of brands) {
+    const brandSources = sources.filter((s) => s.brand === brand);
+    const genderIds = [...new Set(brandSources.flatMap((s) => s.api?.genderIds ?? []))];
+    const genders = genderIds.length > 0 ? genderIds.map((g) => ({ genderIds: [g] })) : [{}];
+    for (const flagKey of STORE_FLAGS) {
+      try {
+        const seen = new Map();
+        for (const gender of genders) {
+          const { items } = await discoverProductsViaApi({
+            brand,
+            api: { ...gender, flagCodes: [flagKey] },
+            maxProducts: 3000,
+            pageSize: 100,
+          });
+          for (const row of productFlagRows({ brand, items, flagKey, nowIso })) seen.set(row.product_id, row);
+        }
+        const rows = [...seen.values()];
+        for (let i = 0; i < rows.length; i += 500) {
+          const { error } = await supabase.from('product_flags').upsert(rows.slice(i, i + 500), { onConflict: 'product_id,flag_key' });
+          if (error) throw error;
+        }
+        console.log(`[flags] ${brand} ${flagKey}: ${rows.length}件 例: ${rows.slice(0, 3).map((r) => r.product_id).join(', ')}`);
+        await sleep(REQUEST_DELAY_MS);
+      } catch (err) {
+        console.log(`::warning title=product-flags::${brand} ${flagKey} の記録に失敗: ${err?.message ?? err}`);
+      }
+    }
+  }
+}
+
 async function recordRegularPrices(sources, productRunState, emptySourceIds) {
   const known = await fetchKnownRegularPrices();
   const discountedIds = new Set(productRunState.keys());
@@ -3112,6 +3149,13 @@ async function main() {
     await recordProductLines(sources);
   } catch (err) {
     console.log(`::warning title=product-lines::ライン記録に失敗: ${err?.message ?? err}`);
+  }
+
+  // 販売場所の制限(一部店舗・オンライン限定)の記録。失敗しても巡回全体は成功扱い。
+  try {
+    await recordProductFlags(sources);
+  } catch (err) {
+    console.log(`::warning title=product-flags::フラグ記録に失敗: ${err?.message ?? err}`);
   }
 
   console.log(
