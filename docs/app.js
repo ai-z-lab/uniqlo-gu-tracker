@@ -1711,7 +1711,7 @@ function appendTodaySection(container, bucket, crawl) {
   count.className = "count";
   // いつの巡回の結果なのかを見出しに出す。「今日の変動」が何時時点の話かが分からないと、
   // まだ今朝の分が入っていないのか、本当に変動が無いのかを区別できない。
-  count.textContent = `${formatJstDayLabel(latestDay)}(${weekdayJaOf(latestDay)}) ${latestTime}更新・${changed.length}件`;
+  count.textContent = `${formatJstDayLabel(latestDay)}(${weekdayJaOf(latestDay)}) ${latestTime}に確認・変動${changed.length}件`;
   header.appendChild(label);
   header.appendChild(count);
   section.appendChild(header);
@@ -2411,11 +2411,11 @@ function renderUpdated(rows) {
   updatedEl.innerHTML = "";
   const badge = document.createElement("span");
   badge.className = `updated-badge ${fresh ? "fresh" : "stale"}`;
-  badge.textContent = fresh ? "今日の更新あり" : "今日はまだ未更新";
+  badge.textContent = fresh ? "今日の巡回済み" : "今日はまだ巡回前";
   updatedEl.appendChild(badge);
 
   const when = document.createElement("span");
-  when.textContent = `最終更新 ${updatedTimeFormatter.format(new Date(latest))}(${weekdayJaOf(latestDay)})`;
+  when.textContent = `最終確認 ${updatedTimeFormatter.format(new Date(latest))}(${weekdayJaOf(latestDay)})`;
   updatedEl.appendChild(when);
   updatedEl.hidden = false;
 
