@@ -146,6 +146,7 @@ const SORT_OPTIONS = [
   ["price_desc", "値段が高い順"],
   ["off_amount", "値下げ額が大きい順"],
   ["off_rate", "値下げ率が高い順"],
+  ["times", "回数が多い順（期間限定の周期・値下げの段階）"],
 ];
 const SORT_LABELS = Object.fromEntries(SORT_OPTIONS);
 function loadSort() {
@@ -1262,6 +1263,13 @@ function changedAtOf(product) {
 
 // 選んでいる並べ替えで並べ直した配列を返す(既定のときはそのまま)。
 // 値下げ前の価格が分からない商品は、値下げ額・率の並べ替えでは最後に回す。
+function timesOf(p) {
+  const type = p.latest.event_type;
+  if (LIMITED_EVENT_TYPES.has(type)) return limitedPeriods(p.history).length;
+  if (MARKDOWN_EVENT_TYPES.has(type)) return markdownStagePoints(p.history).length;
+  return 0;
+}
+
 function sortProductsForDisplay(products) {
   if (state.sort === "default") return products;
   const off = (p) => {
@@ -1275,6 +1283,8 @@ function sortProductsForDisplay(products) {
     price_desc: (a, b) => b.latest.price - a.latest.price,
     off_amount: (a, b) => desc(off(a)?.amount, off(b)?.amount),
     off_rate: (a, b) => desc(off(a)?.rate, off(b)?.rate),
+    // 期間限定は周期の数、値下げは段階の数。同じ回数なら安い順。
+    times: (a, b) => timesOf(b) - timesOf(a) || a.latest.price - b.latest.price,
   }[state.sort];
   // 未確認(直近の巡回で見つからなかった)も混ぜて、選んだ基準どおりに並べる(カードのバッジで区別できる)。
   return [...products].sort(compare);
