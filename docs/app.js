@@ -176,6 +176,8 @@ let previewData = null;
 // コラボ・特別ライン(UNIQLO : C など)。product_id -> ライン名の配列(product_lines 表)。
 // 同じ商品名でもラインが違う別商品があるため、カードにライン名を出して区別する。
 let productLines = new Map();
+// 販売場所の制限(product_id → ['limitedStore'|'onlineOnly'])。
+let productFlags = new Map();
 
 const currencyFormatter = (currency) =>
   new Intl.NumberFormat("ja-JP", { style: "currency", currency, maximumFractionDigits: 0 });
@@ -772,6 +774,14 @@ function renderCard(product) {
     lineBadge.className = "line-badge";
     lineBadge.textContent = label;
     topRow.appendChild(lineBadge);
+  }
+
+  // 販売場所の制限(一部店舗のみ / オンライン限定)。控えめな灰色のバッジ。
+  for (const flag of productFlags.get(latest.product_id) ?? []) {
+    const storeBadge = document.createElement("span");
+    storeBadge.className = "store-badge";
+    storeBadge.textContent = flag === "limitedStore" ? "一部店舗のみ" : "オンライン限定";
+    topRow.appendChild(storeBadge);
   }
 
   const isMarkdownFamily = MARKDOWN_EVENT_TYPES.has(latest.event_type);
@@ -2460,7 +2470,37 @@ async function fetchProductLines() {
   return map;
 }
 
+// 販売場所の制限フラグを読む。48時間以内に確認できた行だけ使う(外れた商品を出さない)。
+// 表が無い・読めないときは空にして、バッジが出ないだけにする。
+async function fetchProductFlags() {
+  const map = new Map();
+  try {
+    const since = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    for (let from = 0; from < 100000; from += PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("product_flags")
+        .select("product_id, flag_key")
+        .gte("checked_at", since)
+        .order("product_id", { ascending: true })
+        .order("flag_key", { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+      if (error) throw error;
+      for (const r of data) {
+        const list = map.get(r.product_id) ?? [];
+        if (!list.includes(r.flag_key)) list.push(r.flag_key);
+        map.set(r.product_id, list);
+      }
+      if (data.length < PAGE_SIZE) break;
+    }
+  } catch (err) {
+    console.warn("product_flags を読めませんでした(店舗バッジは出しません):", err?.message ?? err);
+    return new Map();
+  }
+  return map;
+}
+
 async function main() {
+  const flagsPromise = fetchProductFlags();
   const regularPromise = fetchRegularPrices();
   const linesPromise = fetchProductLines();
   const previewPromise = fetchPreview();
@@ -2480,6 +2520,7 @@ async function main() {
 
   regularPrices = await regularPromise;
   productLines = await linesPromise;
+  productFlags = await flagsPromise;
   previewData = await previewPromise;
   statusEl.textContent = "";
   renderUpdated(data);
