@@ -1904,8 +1904,16 @@ function previewItemsFor(brand, gender) {
 }
 
 function appendPreviewSection(container) {
-  const items = previewItemsFor(state.brand, state.gender);
   const set = previewSetFor(state.brand);
+  // 選んでいる並べ替えを、先行公開のカードにも効かせる(「新しい順」と既定は公開データの並びのまま)。
+  const sortKeys = {
+    price_asc: (a, b) => a.price - b.price,
+    price_desc: (a, b) => b.price - a.price,
+    off_amount: (a, b) => (b.normal - b.price) - (a.normal - a.price),
+    off_rate: (a, b) => (1 - b.price / b.normal) - (1 - a.price / a.normal),
+  };
+  const items = [...previewItemsFor(state.brand, state.gender)];
+  if (sortKeys[state.sort]) items.sort(sortKeys[state.sort]);
   const section = document.createElement("section");
   section.className = "section";
   section.style.setProperty("--status-color", "var(--status-limited)");
