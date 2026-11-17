@@ -102,5 +102,87 @@
       "normal": 1990,
       "price": 1490
     }
+  ],
+  "extra": [
+    {
+      "brand": "uniqlo",
+      "checked": "2026-11-17",
+      "fact": "感謝価格",
+      "note": "ユニクロ公式の感謝祭ページ「先行公開 11/20(金)からの感謝価格アイテム」の5品目です。公式画像では価格の先頭の桁(¥99…／¥1,9…／¥5,9…／¥3,9…)まで確認し、価格の全桁と通常価格は報道記事(トラベル Watch 11/17)の値です。パフテックジャケットの通常価格だけは公式の価格データで確認済み。一部、期間限定価格の対象外の商品があります。",
+      "items": [
+        {
+          "gender": "women",
+          "name": "ヒートテックインナー",
+          "url": "https://www.uniqlo.com/jp/ja/women/heattech",
+          "normal": 1290,
+          "price": 990
+        },
+        {
+          "gender": "men",
+          "name": "ヒートテックインナー",
+          "url": "https://www.uniqlo.com/jp/ja/men/heattech",
+          "normal": 1290,
+          "price": 990
+        },
+        {
+          "gender": "women",
+          "name": "ファーリーフリースジャケット",
+          "url": "https://www.uniqlo.com/jp/ja/search?genderIds=1071&q=%E3%83%95%E3%82%A1%E3%83%BC%E3%83%AA%E3%83%BC%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9%20%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88",
+          "normal": 2990,
+          "price": 1990
+        },
+        {
+          "gender": "men",
+          "name": "ファーリーフリースジャケット",
+          "url": "https://www.uniqlo.com/jp/ja/search?genderIds=1071&q=%E3%83%95%E3%82%A1%E3%83%BC%E3%83%AA%E3%83%BC%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9%20%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88",
+          "normal": 2990,
+          "price": 1990
+        },
+        {
+          "gender": "women",
+          "name": "フリースジャケット",
+          "url": "https://www.uniqlo.com/jp/ja/search?genderIds=1072&q=%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88",
+          "normal": 2990,
+          "price": 1990
+        },
+        {
+          "gender": "men",
+          "name": "フリースジャケット",
+          "url": "https://www.uniqlo.com/jp/ja/search?genderIds=1072&q=%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88",
+          "normal": 2990,
+          "price": 1990
+        },
+        {
+          "gender": "women",
+          "name": "パフテックジャケット",
+          "productId": "E487408-000",
+          "url": "https://www.uniqlo.com/jp/ja/products/E487408-000/00",
+          "normal": 6990,
+          "price": 5990
+        },
+        {
+          "gender": "men",
+          "name": "パフテックジャケット",
+          "productId": "E486171-000",
+          "url": "https://www.uniqlo.com/jp/ja/products/E486171-000/00",
+          "normal": 6990,
+          "price": 5990
+        },
+        {
+          "gender": "women",
+          "name": "暖パン ウォームストレッチパンツ",
+          "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%82%A9%E3%83%BC%E3%83%A0%E3%82%B9%E3%83%88%E3%83%AC%E3%83%83%E3%83%81%E3%83%91%E3%83%B3%E3%83%84&queryRelaxationFlag=true",
+          "normal": 4990,
+          "price": 3990
+        },
+        {
+          "gender": "men",
+          "name": "暖パン ウォームストレッチパンツ",
+          "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%82%A9%E3%83%BC%E3%83%A0%E3%82%B9%E3%83%88%E3%83%AC%E3%83%83%E3%83%81%E3%83%91%E3%83%B3%E3%83%84&queryRelaxationFlag=true",
+          "normal": 4990,
+          "price": 3990
+        }
+      ]
+    }
   ]
 }

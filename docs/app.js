@@ -1889,14 +1889,23 @@ async function fetchPreview() {
 }
 
 // 表示中のブランド・性別に当てはまる先行公開の商品。期間(until)を過ぎたら出さない。
+// ブランドに合う先行公開のまとまり。最上位がGU分、extra に他ブランド分(UNIQLOなど)が入る。
+function previewSetFor(brand) {
+  if (!previewData) return null;
+  const set = [previewData, ...(previewData.extra ?? [])].find((s) => s.brand === brand);
+  return set ? { ...previewData, ...set } : null;
+}
+
 function previewItemsFor(brand, gender) {
-  if (!previewData || previewData.brand !== brand) return [];
-  if (previewData.until && jstDayOf(new Date()) > previewData.until) return [];
-  return previewData.items.filter((it) => gender === "all" || it.gender === gender);
+  const set = previewSetFor(brand);
+  if (!set) return [];
+  if (set.until && jstDayOf(new Date()) > set.until) return [];
+  return set.items.filter((it) => gender === "all" || it.gender === gender);
 }
 
 function appendPreviewSection(container) {
   const items = previewItemsFor(state.brand, state.gender);
+  const set = previewSetFor(state.brand);
   const section = document.createElement("section");
   section.className = "section";
   section.style.setProperty("--status-color", "var(--status-limited)");
@@ -1904,7 +1913,7 @@ function appendPreviewSection(container) {
   header.className = "section-header";
   const label = document.createElement("span");
   label.className = "label";
-  label.textContent = `${previewData.title}(${previewData.period})`;
+  label.textContent = `${set.title}(${set.period})`;
   const count = document.createElement("span");
   count.className = "count";
   count.textContent = `${items.length}件`;
@@ -1914,7 +1923,7 @@ function appendPreviewSection(container) {
 
   const note = document.createElement("p");
   note.className = "count-note";
-  note.textContent = `${previewData.note}(確認 ${previewData.checked.slice(5).replace("-", "/")})`;
+  note.textContent = `${set.note}(確認 ${set.checked.slice(5).replace("-", "/")})`;
   section.appendChild(note);
 
   const grid = document.createElement("div");
@@ -1959,7 +1968,7 @@ function appendPreviewSection(container) {
     facts.className = "facts";
     const fact = document.createElement("span");
     fact.className = "fact";
-    fact.textContent = "アプリ会員 感謝価格";
+    fact.textContent = set.fact ?? "アプリ会員 感謝価格";
     facts.appendChild(fact);
     card.appendChild(facts);
 
