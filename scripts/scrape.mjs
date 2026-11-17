@@ -29,7 +29,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { catalogSourcesFrom, regularPriceRows } from './regular-prices.mjs';
-import { lineTagsFrom, productLineRows } from './product-lines.mjs';
+import { lineTagsFrom, productLineRows, partialStoreRows } from './product-lines.mjs';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -1876,6 +1876,18 @@ async function recordRegularPrices(sources, productRunState, emptySourceIds) {
         if (error) throw error;
       }
       for (const r of rows) known.set(r.product_id, r.regular_price);
+      // 「一部店舗商品」のフラグ(サイト自身の表示)を product_lines に記録する。失敗しても
+      // 通常価格の記録には影響させない。
+      try {
+        const storeRows = partialStoreRows({ brand: catalog.brand, items, nowIso });
+        for (let i = 0; i < storeRows.length; i += 500) {
+          const { error } = await supabase.from('product_lines').upsert(storeRows.slice(i, i + 500), { onConflict: 'product_id,line_key', ignoreDuplicates: true });
+          if (error) throw error;
+        }
+        console.log(`[partial-store] ${catalog.id}: 一部店舗商品 ${storeRows.length}件`);
+      } catch (err) {
+        console.log(`::warning title=partial-store::${catalog.id} の一部店舗記録に失敗: ${err?.message ?? err}`);
+      }
       written += rows.length;
       console.log(`[regular] ${catalog.id}: 全商品 ${items.length}件、通常価格を書いたのは ${rows.length}件`);
     } catch (err) {

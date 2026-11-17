@@ -174,6 +174,8 @@ let regularPrices = new Map();
 // コラボ・特別ライン(UNIQLO : C など)。product_id -> ライン名の配列(product_lines 表)。
 // 同じ商品名でもラインが違う別商品があるため、カードにライン名を出して区別する。
 let productLines = new Map();
+// 一部店舗のみの取り扱い(product_lines に line_key=flag:partial-store で入る)。
+const PARTIAL_STORE_KEY = "flag:partial-store";
 
 const currencyFormatter = (currency) =>
   new Intl.NumberFormat("ja-JP", { style: "currency", currency, maximumFractionDigits: 0 });
@@ -767,8 +769,15 @@ function renderCard(product) {
   // ライン名(UNIQLO : C / Uniqlo U など)。商品名の直後に黒いバッジで出す。
   for (const label of productLines.get(latest.product_id) ?? []) {
     const lineBadge = document.createElement("span");
-    lineBadge.className = "line-badge";
-    lineBadge.textContent = label;
+    if (label === PARTIAL_STORE_KEY) {
+      // 一部店舗のみ。ブランド色の細い枠だけの控えめな表示。
+      lineBadge.className = "store-badge";
+      lineBadge.textContent = "一部店舗";
+      lineBadge.title = "一部店舗のみの取り扱い(公式サイトの表示)";
+    } else {
+      lineBadge.className = "line-badge";
+      lineBadge.textContent = label;
+    }
     topRow.appendChild(lineBadge);
   }
 
@@ -2326,14 +2335,15 @@ async function fetchProductLines() {
     for (let from = 0; from < 100000; from += PAGE_SIZE) {
       const { data, error } = await supabase
         .from("product_lines")
-        .select("product_id, line_label")
+        .select("product_id, line_key, line_label")
         .order("product_id", { ascending: true })
         .order("line_key", { ascending: true })
         .range(from, from + PAGE_SIZE - 1);
       if (error) throw error;
       for (const r of data) {
         const list = map.get(r.product_id) ?? [];
-        if (!list.includes(r.line_label)) list.push(r.line_label);
+        const label = r.line_key === PARTIAL_STORE_KEY ? PARTIAL_STORE_KEY : r.line_label;
+        if (!list.includes(label)) list.push(label);
         map.set(r.product_id, list);
       }
       if (data.length < PAGE_SIZE) break;

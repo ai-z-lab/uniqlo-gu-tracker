@@ -32,3 +32,18 @@ test('productLineRows: price_events と同じ product_id で、重複を除く',
   assert.equal(rows[0].line_key, 'special-collection:uniqlo-c');
   assert.equal(rows[0].line_label, 'UNIQLO : C');
 });
+
+import { partialStoreRows, isPartialStoreItem } from './product-lines.mjs';
+test('partialStoreRows: 一部店舗商品のフラグがある商品だけ拾う', () => {
+  const items = [
+    { productId: 'E1', priceGroup: '00', representative: { flags: { productFlags: [{ name: '一部店舗商品' }] } } },
+    { productId: 'E2', priceGroup: '00', representative: { flags: { productFlags: [{ name: '男女兼用' }] } } },
+    { productId: 'E3', priceGroup: '00' },
+  ];
+  assert.equal(isPartialStoreItem(items[0]), true);
+  assert.equal(isPartialStoreItem(items[1]), false);
+  assert.equal(isPartialStoreItem(items[2]), false);
+  const rows = partialStoreRows({ brand: 'uniqlo', items, nowIso: 'x' });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].line_key, 'flag:partial-store');
+});

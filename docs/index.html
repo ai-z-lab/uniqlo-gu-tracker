@@ -704,6 +704,18 @@
       white-space: nowrap;
     }
 
+    /* 一部店舗のみの取り扱い。ブランド色の細い枠だけにして、他のバッジより目立たせない。 */
+    .store-badge {
+      display: inline-block;
+      padding: 0.05rem 0.4rem;
+      border-radius: 5px;
+      border: 1px solid var(--brand-color, var(--brand-uniqlo));
+      color: var(--brand-color, var(--brand-uniqlo));
+      font-size: 0.68rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
     @media (prefers-color-scheme: dark) {
       .line-badge { background: #f2f2f2; color: #111; }
     }
