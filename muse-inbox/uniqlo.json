@@ -1,0 +1,100 @@
+{
+  "brand": "uniqlo",
+  "source": "チラシ 26fw_flyer_1120_chirashi.pdf(Museが画像から読み取り)",
+  "checked": "2026-11-19",
+  "period": "11/20(金)〜11/26(木)",
+  "until": "2026-11-26",
+  "note": "ユニクロ公式の感謝祭ページと、11/19公開のチラシ(11/20〜)から読み取った感謝価格です。チラシ分は通常価格が載っていないため、価格のみ表示しています(性別の区別がない商品は男女どちらの表示にも出ます)。チラシは画像のため、読み取りの細かい誤差があり得ます。一部、期間限定価格の対象外の商品があります。",
+  "items": [
+    {
+      "name": "ソフトニットフリースクルーネックT",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%BD%E3%83%95%E3%83%88%E3%83%8B%E3%83%83%E3%83%88%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9",
+      "price": 1290
+    },
+    {
+      "name": "極暖カシミヤブレンドT (UNIQLO:C)",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E6%A5%B5%E6%9A%96%E3%82%AB%E3%82%B7%E3%83%9F%E3%83%A4%E3%83%96%E3%83%AC%E3%83%B3%E3%83%89",
+      "price": 1990
+    },
+    {
+      "name": "極暖カシミヤブレンドリブハイネックT (UNIQLO:C・11/20発売)",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E6%A5%B5%E6%9A%96%E3%82%AB%E3%82%B7%E3%83%9F%E3%83%A4%E3%83%96%E3%83%AC%E3%83%B3%E3%83%89%20%E3%83%AA%E3%83%96%E3%83%8F%E3%82%A4%E3%83%8D%E3%83%83%E3%82%AF",
+      "price": 2990
+    },
+    {
+      "name": "超極暖ヒートテック",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E8%B6%85%E6%A5%B5%E6%9A%96%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF",
+      "price": 2990
+    },
+    {
+      "name": "ヒートテックタイツ",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%E3%82%BF%E3%82%A4%E3%83%84",
+      "price": 1290
+    },
+    {
+      "name": "ウルトラストレッチセット",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%83%AB%E3%83%88%E3%83%A9%E3%82%B9%E3%83%88%E3%83%AC%E3%83%83%E3%83%81",
+      "price": 2990
+    },
+    {
+      "name": "ヒートテックソックス",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%E3%82%BD%E3%83%83%E3%82%AF%E3%82%B9",
+      "price": 390
+    },
+    {
+      "name": "ヒートテックロングルームソックス",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%20%E3%83%AB%E3%83%BC%E3%83%A0%E3%82%BD%E3%83%83%E3%82%AF%E3%82%B9",
+      "price": 790
+    },
+    {
+      "name": "シームレスダウンパーカ",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B7%E3%83%BC%E3%83%A0%E3%83%AC%E3%82%B9%E3%83%80%E3%82%A6%E3%83%B3",
+      "price": 12900
+    },
+    {
+      "name": "カシミヤセーター",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%AB%E3%82%B7%E3%83%9F%E3%83%A4%E3%82%BB%E3%83%BC%E3%82%BF%E3%83%BC",
+      "price": 9990
+    },
+    {
+      "name": "スムースコットンクルーネックセーター (UNIQLO:C)",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B9%E3%83%A0%E3%83%BC%E3%82%B9%E3%82%B3%E3%83%83%E3%83%88%E3%83%B3%E3%82%AF%E3%83%AB%E3%83%BC%E3%83%8D%E3%83%83%E3%82%AF%E3%82%BB%E3%83%BC%E3%82%BF%E3%83%BC",
+      "price": 2990
+    },
+    {
+      "name": "フランネルシャツ (JW ANDERSON)",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=JW%20ANDERSON%20%E3%83%95%E3%83%A9%E3%83%B3%E3%83%8D%E3%83%AB%E3%82%B7%E3%83%A3%E3%83%84",
+      "price": 2990
+    },
+    {
+      "name": "ストレートジーンズ (JW ANDERSON)",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=JW%20ANDERSON%20%E3%82%B9%E3%83%88%E3%83%AC%E3%83%BC%E3%83%88%E3%82%B8%E3%83%BC%E3%83%B3%E3%82%BA",
+      "price": 3990
+    },
+    {
+      "name": "オーバーサイズプルパーカ (UNIQLO:C)",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%AA%E3%83%BC%E3%83%90%E3%83%BC%E3%82%B5%E3%82%A4%E3%82%BA%E3%83%97%E3%83%AB%E3%83%91%E3%83%BC%E3%82%AB",
+      "price": 2990
+    },
+    {
+      "name": "KAWS×UNIVERSE スウェットシャツ",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=KAWS%20UNIVERSE%20%E3%82%B9%E3%82%A6%E3%82%A7%E3%83%83%E3%83%88",
+      "price": 2990
+    },
+    {
+      "name": "スウェットパンツ (UNIQLO:C)",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B9%E3%82%A6%E3%82%A7%E3%83%83%E3%83%88%E3%83%91%E3%83%B3%E3%83%84",
+      "price": 2990
+    },
+    {
+      "name": "EZYバレルジーンズ",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=EZY%E3%83%90%E3%83%AC%E3%83%AB%E3%82%B8%E3%83%BC%E3%83%B3%E3%82%BA",
+      "price": 2990
+    },
+    {
+      "name": "エアリズムマスク",
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A8%E3%82%A2%E3%83%AA%E3%82%BA%E3%83%A0%E3%83%9E%E3%82%B9%E3%82%AF",
+      "price": 790
+    }
+  ]
+}

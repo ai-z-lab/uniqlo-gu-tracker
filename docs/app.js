@@ -1887,12 +1887,42 @@ function renderToolbar(rawBucket, bucket, crawl) {
       : "「値下げ」の件数には「初値下げ」の商品も含みます。ユニセックス商品はメンズとウィメンズの両方に入ります。";
 }
 
+// muse-inbox/{brand}.json(Museが置く読み取り結果)。公開リポジトリのrawから読む。無ければ何もしない。
+const MUSE_INBOX_BASE = "https://raw.githubusercontent.com/ai-z-lab/uniqlo-gu-tracker/main/muse-inbox";
+
+async function fetchMuseInbox(brand) {
+  try {
+    const res = await fetch(`${MUSE_INBOX_BASE}/${brand}.json?d=${Math.floor(Date.now() / 300000)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data && data.brand === brand && Array.isArray(data.items) ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+// 同じ性別・同じ商品名なら inbox 側を優先して、先行公開のまとまりに重ねる。
+function overlayMuseInbox(data, inbox) {
+  const sets = [data, ...(data.extra ?? [])];
+  const set = sets.find((s) => s.brand === inbox.brand);
+  if (!set) return;
+  const keyOf = (it) => `${it.gender ?? ""}|${it.name}`;
+  const incoming = new Map(inbox.items.filter((it) => it.name && Number.isFinite(it.price)).map((it) => [keyOf(it), it]));
+  const kept = set.items.filter((it) => !incoming.has(keyOf(it)));
+  set.items = [...kept, ...incoming.values()].map((it) => ({ ...it, url: it.url || `https://www.${inbox.brand === "gu" ? "gu-global" : "uniqlo"}.com/jp/ja/search?q=${encodeURIComponent(it.name)}` }));
+  for (const k of ["checked", "period", "until", "note"]) if (inbox[k]) set[k] = inbox[k];
+}
+
 async function fetchPreview() {
   try {
     const res = await fetch(`preview.json?d=${Math.floor(Date.now() / 600000)}`);
     if (!res.ok) return null;
     const data = await res.json();
-    return data && Array.isArray(data.items) ? data : null;
+    if (!data || !Array.isArray(data.items)) return null;
+    for (const inbox of await Promise.all(["uniqlo", "gu"].map(fetchMuseInbox))) {
+      if (inbox) overlayMuseInbox(data, inbox);
+    }
+    return data;
   } catch {
     return null;
   }
@@ -1910,7 +1940,7 @@ function previewItemsFor(brand, gender) {
   const set = previewSetFor(brand);
   if (!set) return [];
   if (set.until && jstDayOf(new Date()) > set.until) return [];
-  return set.items.filter((it) => gender === "all" || it.gender === gender);
+  return set.items.filter((it) => gender === "all" || !it.gender || it.gender === gender);
 }
 
 function appendPreviewSection(container) {
@@ -1919,8 +1949,9 @@ function appendPreviewSection(container) {
   const sortKeys = {
     price_asc: (a, b) => a.price - b.price,
     price_desc: (a, b) => b.price - a.price,
-    off_amount: (a, b) => (b.normal - b.price) - (a.normal - a.price),
-    off_rate: (a, b) => (1 - b.price / b.normal) - (1 - a.price / a.normal),
+    // 通常価格が分からない商品(チラシのみ)は値引き順の最後に回す。
+    off_amount: (a, b) => (b.normal ? b.normal - b.price : -1) - (a.normal ? a.normal - a.price : -1),
+    off_rate: (a, b) => (b.normal ? 1 - b.price / b.normal : -1) - (a.normal ? 1 - a.price / a.normal : -1),
   };
   const items = [...previewItemsFor(state.brand, state.gender)];
   if (sortKeys[state.sort]) items.sort(sortKeys[state.sort]);
@@ -1972,14 +2003,16 @@ function appendPreviewSection(container) {
     price.className = "price";
     price.textContent = fmt.format(it.price);
     priceRow.appendChild(price);
-    const was = document.createElement("span");
-    was.className = "was-price";
-    was.textContent = `通常 ${fmt.format(it.normal)}`;
-    priceRow.appendChild(was);
-    const off = document.createElement("span");
-    off.className = "discount";
-    off.textContent = `${Math.round((1 - it.price / it.normal) * 100)}%OFF`;
-    priceRow.appendChild(off);
+    if (it.normal) {
+      const was = document.createElement("span");
+      was.className = "was-price";
+      was.textContent = `通常 ${fmt.format(it.normal)}`;
+      priceRow.appendChild(was);
+      const off = document.createElement("span");
+      off.className = "discount";
+      off.textContent = `${Math.round((1 - it.price / it.normal) * 100)}%OFF`;
+      priceRow.appendChild(off);
+    }
     card.appendChild(priceRow);
 
     const facts = document.createElement("div");
