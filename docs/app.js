@@ -2061,6 +2061,13 @@ function appendPreviewSection(container) {
     fact.className = "fact";
     fact.textContent = set.fact ?? "アプリ会員 感謝価格";
     facts.appendChild(fact);
+    // 「一部の色・サイズのみ」「オンライン限定」など、対象に条件がある商品は、カードに目立つ印を付ける。
+    for (const tag of Array.isArray(it.tags) ? it.tags : []) {
+      const t = document.createElement("span");
+      t.className = "fact fact-condition";
+      t.textContent = tag;
+      facts.appendChild(t);
+    }
     const genderLabel = it.genders ? (it.genders.size === 1 ? (it.genders.has("men") ? "メンズ" : "ウィメンズ") : "") : { men: "メンズ", women: "ウィメンズ" }[it.gender] ?? "";
     if (genderLabel) {
       const g = document.createElement("span");
