@@ -62,9 +62,16 @@
       "price": 2990
     },
     {
+      "name": "フランネルシャツ",
+      "price": 2990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%95%E3%83%A9%E3%83%B3%E3%83%8D%E3%83%AB%E3%82%B7%E3%83%A3%E3%83%84",
+      "gender": "men"
+    },
+    {
       "name": "フランネルシャツ (JW ANDERSON)",
       "url": "https://www.uniqlo.com/jp/ja/search?q=JW%20ANDERSON%20%E3%83%95%E3%83%A9%E3%83%B3%E3%83%8D%E3%83%AB%E3%82%B7%E3%83%A3%E3%83%84",
-      "price": 2990
+      "price": 2990,
+      "gender": "men"
     },
     {
       "name": "ストレートジーンズ (JW ANDERSON)",
