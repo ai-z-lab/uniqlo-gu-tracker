@@ -1853,7 +1853,7 @@ function renderToolbar(rawBucket, bucket, crawl) {
   }
   categoryFilterEl.value = state.category ?? "";
 
-  const previewCount = previewItemsFor(state.brand, state.gender).length;
+  const previewCount = (state.gender === "all" ? new Set(previewItemsFor(state.brand, state.gender).map((it) => `${it.name}|${it.price}|${it.normal ?? ""}`)).size : previewItemsFor(state.brand, state.gender).length);
   const tabs = [
     ...(previewCount > 0 ? [{ key: "preview", label: "感謝祭 先行", count: previewCount }] : []),
     { key: "today", label: "今日", count: crawl ? todayChangesOf(bucket, crawl.latestDay).filter((p) => !p.hidden).length : 0 },
@@ -1936,6 +1936,32 @@ function previewSetFor(brand) {
   return set ? { ...previewData, ...set } : null;
 }
 
+// 先行公開の商品のカテゴリ。巡回データの分類(scripts/scrape.mjs の CATEGORY_KEYWORDS)と同じ規則を、商品名から当てはめる。
+const PREVIEW_CATEGORY_RULES = {
+  uniqlo: [
+    ["ワンピース", ["ワンピース", "オールインワン", "サロペット", "ジャンプスーツ"]],
+    ["インナー・ルームウェア", ["インナー", "ヒートテック", "極暖", "ルームウェア", "パジャマ", "肌着", "スリープ", "ブラトップ", "ワイヤレスブラ", "ブラジャー", "スポーツブラ", "ブラキャミ", "ショーツ", "エアリズム", "キャミソール", "タンクトップ", "ステテコ", "リラコ", "タイツ", "レギンス", "ラウンジ"]],
+    ["アウター", ["ジャケット", "コート", "ブルゾン", "ダウン", "アウター", "マウンテンパーカ", "ベスト", "フリース", "カバーオール"]],
+    ["ビジネス", ["スーツ", "セットアップ", "スラックス", "ビジネス", "ネクタイ"]],
+    ["トップス", ["Tシャツ", "ポロシャツ"]],
+    ["シャツ", ["シャツ", "ブラウス"]],
+    ["パンツ", ["パンツ", "デニム", "ジーンズ", "スカート", "ショートパンツ", "ジョガー", "キュロット", "チノ", "ジョーツ"]],
+    ["トップス", ["カットソー", "ニット", "セーター", "スウェット", "パーカ", "カーディガン", "トップス", "プルオーバー", "ノースリーブ"]],
+  ],
+  gu: [
+    ["ワンピース", ["ワンピース", "オールインワン", "サロペット", "ジャンプスーツ"]],
+    ["アウター・パンツ", ["ジャケット", "コート", "ブルゾン", "ダウン", "アウター", "パンツ", "デニム", "ジーンズ", "スカート", "ショートパンツ", "ショーツ", "ベスト", "フリース", "キュロット", "スラックス", "ジョーツ", "チノ"]],
+    ["トップス", ["Tシャツ", "カットソー", "ニット", "セーター", "スウェット", "シャツ", "ブラウス", "パーカ", "カーディガン", "トップス", "プルオーバー", "タンクトップ", "キャミソール", "ノースリーブ", "チュニック", "ラウンジ"]],
+  ],
+};
+function previewCategoryOf(brand, rawName) {
+  const name = String(rawName ?? "").normalize("NFKC");
+  for (const [category, keywords] of PREVIEW_CATEGORY_RULES[brand] ?? []) {
+    if (keywords.some((k) => name.includes(k))) return category;
+  }
+  return brand === "gu" ? "グッズ・その他" : "その他";
+}
+
 function previewItemsFor(brand, gender) {
   const set = previewSetFor(brand);
   if (!set) return [];
@@ -1953,8 +1979,24 @@ function appendPreviewSection(container) {
     off_amount: (a, b) => (b.normal ? b.normal - b.price : -1) - (a.normal ? a.normal - a.price : -1),
     off_rate: (a, b) => (b.normal ? 1 - b.price / b.normal : -1) - (a.normal ? 1 - a.price / a.normal : -1),
   };
-  const items = [...previewItemsFor(state.brand, state.gender)];
-  if (sortKeys[state.sort]) items.sort(sortKeys[state.sort]);
+  const matcher = makeProductMatcher(state.query);
+  let items = previewItemsFor(state.brand, state.gender)
+    .map((it) => ({ ...it, category: previewCategoryOf(state.brand, it.name) }))
+    // 上の「カテゴリ」「検索」の絞り込みを、先行公開の一覧にも効かせる。
+    .filter((it) => (!state.category || it.category === state.category) && (!matcher || matcher({ latest: { product_name: it.name }, category: it.category })));
+  // 「すべて」では、男女どちらにも出す商品(性別なし)や、同じ商品名・同じ価格のメンズ/ウィメンズを1枚にまとめる。
+  if (state.gender === "all") {
+    const merged = new Map();
+    for (const it of items) {
+      const key = `${it.name}|${it.price}|${it.normal ?? ""}`;
+      const found = merged.get(key);
+      if (!found) merged.set(key, { ...it, genders: new Set(it.gender ? [it.gender] : []) });
+      else if (it.gender) found.genders.add(it.gender);
+    }
+    items = [...merged.values()];
+  }
+  const sorted = Boolean(sortKeys[state.sort]);
+  if (sorted) items.sort(sortKeys[state.sort]);
   const section = document.createElement("section");
   section.className = "section";
   section.style.setProperty("--status-color", "var(--status-limited)");
@@ -1975,10 +2017,8 @@ function appendPreviewSection(container) {
   note.textContent = `${set.note}(確認 ${set.checked.slice(5).replace("-", "/")})`;
   section.appendChild(note);
 
-  const grid = document.createElement("div");
-  grid.className = "grid";
   const fmt = new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY", maximumFractionDigits: 0 });
-  for (const it of items) {
+  const makeCard = (it) => {
     const card = document.createElement("a");
     card.className = "card";
     card.href = it.url;
@@ -2021,11 +2061,48 @@ function appendPreviewSection(container) {
     fact.className = "fact";
     fact.textContent = set.fact ?? "アプリ会員 感謝価格";
     facts.appendChild(fact);
+    const genderLabel = it.genders ? (it.genders.size === 1 ? (it.genders.has("men") ? "メンズ" : "ウィメンズ") : "") : { men: "メンズ", women: "ウィメンズ" }[it.gender] ?? "";
+    if (genderLabel) {
+      const g = document.createElement("span");
+      g.className = "fact";
+      g.textContent = genderLabel;
+      facts.appendChild(g);
+    }
     card.appendChild(facts);
 
-    grid.appendChild(card);
+    return card;
+  };
+  const addGrid = (parent, list) => {
+    const grid = document.createElement("div");
+    grid.className = "grid";
+    for (const it of list) grid.appendChild(makeCard(it));
+    parent.appendChild(grid);
+  };
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "count-note";
+    empty.textContent = "条件に合う商品はありません。";
+    section.appendChild(empty);
+  } else if (sorted) {
+    // 並べ替え中は、カテゴリで分けず1つの一覧にして並べる(ほかの一覧と同じ)。
+    addGrid(section, items);
+  } else {
+    // 既定はカテゴリ別にまとめる。見出しに件数を出す。
+    const byCategory = new Map();
+    for (const it of items) {
+      if (!byCategory.has(it.category)) byCategory.set(it.category, []);
+      byCategory.get(it.category).push(it);
+    }
+    for (const category of categoryOrderFor(state.brand, [...byCategory.keys()])) {
+      const list = byCategory.get(category);
+      if (!list) continue;
+      const head = document.createElement("h3");
+      head.className = "preview-category";
+      head.textContent = `${category}　${list.length}件`;
+      section.appendChild(head);
+      addGrid(section, list);
+    }
   }
-  section.appendChild(grid);
   container.appendChild(section);
 }
 
