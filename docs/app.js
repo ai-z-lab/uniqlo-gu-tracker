@@ -886,16 +886,6 @@ function renderCard(product) {
     facts.appendChild(interval);
   }
 
-  // 同じ商品名でも、メンズとウィメンズで別の商品になる。どちら向きか分かるよう、カードに必ず出す。
-  const GENDER_CHIP_LABELS = { men: "メンズ", women: "ウィメンズ", unisex: "ユニセックス", kids: "キッズ", baby: "ベビー" };
-  const genderLabel = GENDER_CHIP_LABELS[latest.gender];
-  if (genderLabel) {
-    const genderChip = document.createElement("span");
-    genderChip.className = `fact gender-chip gender-${latest.gender}`;
-    genderChip.textContent = genderLabel;
-    facts.insertBefore(genderChip, facts.firstChild);
-  }
-
   if (latest.stock_status === "stock_out") {
     const soldOut = document.createElement("span");
     soldOut.className = "fact sold-out";
