@@ -174,6 +174,23 @@ let index = null; // brand -> gender -> event_type -> category -> [{ latest, his
 let regularPrices = new Map();
 // 感謝祭など「公式が先行公開している、まだ始まっていない価格」。docs/preview.json から読む。
 let previewData = null;
+// 商品名に入っているコラボ先ブランド名(product_lines で拾えない商品の補助)。
+// 大文字小文字は区別しない。見つかったら、表示用のブランド名を返す。
+const COLLAB_BRANDS_IN_NAME = [
+  "ENGINEERED GARMENTS",
+  "JW ANDERSON",
+  "ROKH",
+  "UNIQLO : C",
+  "UNIQLO U",
+];
+function collabBrandInName(name) {
+  const text = String(name ?? "").toUpperCase();
+  for (const brand of COLLAB_BRANDS_IN_NAME) {
+    if (text.includes(brand)) return brand === "ROKH" ? "rokh" : brand;
+  }
+  return "";
+}
+
 // コラボ・特別ライン(UNIQLO : C など)。product_id -> ライン名の配列(product_lines 表)。
 // 同じ商品名でもラインが違う別商品があるため、カードにライン名を出して区別する。
 let productLines = new Map();
@@ -770,7 +787,14 @@ function renderCard(product) {
   topRow.appendChild(title);
 
   // ライン名(UNIQLO : C / Uniqlo U など)。商品名の直後に黒いバッジで出す。
-  for (const label of productLines.get(latest.product_id) ?? []) {
+  const lineLabels = [...(productLines.get(latest.product_id) ?? [])];
+  // ライン情報(product_lines)に無い商品でも、商品名にコラボ先のブランド名が入っていれば
+  // 「コラボ」と分かる表記を出す(例: ENGINEERED GARMENTS)。ライン情報と同じ名前は二重に出さない。
+  if (lineLabels.length === 0) {
+    const collab = collabBrandInName(latest.product_name);
+    if (collab) lineLabels.push(`コラボ：${collab}`);
+  }
+  for (const label of lineLabels) {
     const lineBadge = document.createElement("span");
     lineBadge.className = "line-badge";
     lineBadge.textContent = label;
