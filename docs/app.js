@@ -176,17 +176,33 @@ let regularPrices = new Map();
 let previewData = null;
 // 商品名に入っているコラボ先ブランド名(product_lines で拾えない商品の補助)。
 // 大文字小文字は区別しない。見つかったら、表示用のブランド名を返す。
+// 商品名にコラボ先のブランド名が入っているときの判定（product_lines に無い商品用）。
+// [商品名で探す文字（大文字）, バッジに出す名前]。前後が英字のときは別の語とみなして一致させない。
 const COLLAB_BRANDS_IN_NAME = [
-  "ENGINEERED GARMENTS",
-  "JW ANDERSON",
-  "ROKH",
-  "UNIQLO : C",
-  "UNIQLO U",
+  ["ENGINEERED GARMENTS", "ENGINEERED GARMENTS"],
+  ["JW ANDERSON", "JW ANDERSON"],
+  ["ROKH", "rokh"],
+  ["UNIQLO : C", "UNIQLO : C"],
+  ["UNIQLO U", "UNIQLO U"],
+  ["FACTORY RECORDS", "Factory Records"],
+  ["COCHAE", "COCHAE"],
+  ["WAMERICANBEY", "WamericanBEY"],
+  ["NTQ", "NTQ"],
+  ["NAGA", "NAGA"],
+  ["NANODESIGN", "NANODESIGN"],
 ];
 function collabBrandInName(name) {
   const text = String(name ?? "").toUpperCase();
-  for (const brand of COLLAB_BRANDS_IN_NAME) {
-    if (text.includes(brand)) return brand === "ROKH" ? "rokh" : brand;
+  for (const [key, label] of COLLAB_BRANDS_IN_NAME) {
+    let from = 0;
+    for (;;) {
+      const i = text.indexOf(key, from);
+      if (i < 0) break;
+      const before = text[i - 1] ?? "";
+      const after = text[i + key.length] ?? "";
+      if (!/[A-Z]/.test(before) && !/[A-Z]/.test(after)) return label;
+      from = i + 1;
+    }
   }
   return "";
 }
