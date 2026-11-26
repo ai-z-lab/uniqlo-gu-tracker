@@ -2124,6 +2124,9 @@ function appendPreviewSection(container) {
   section.appendChild(note);
 
   const fmt = new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY", maximumFractionDigits: 0 });
+  // チラシ由来(期間限定予想)のカードは、ふだんの「期間限定」のカードと同じ形にする(本人の指摘、2026-11-26)。
+  // 「予想」であることはタブ名と見出しで分かるので、カード側には特別なバッジを付けない。
+  const fromFlyer = previewNamesOf(set).tab === "期間限定予想";
   const makeCard = (it) => {
     const card = document.createElement("a");
     card.className = "card";
@@ -2139,7 +2142,9 @@ function appendPreviewSection(container) {
     const badge = document.createElement("span");
     badge.className = "status-badge";
     badge.style.setProperty("--status-color", "var(--status-limited)");
-    badge.textContent = `${(String(set.period ?? "").match(/^\d{1,2}\/\d{1,2}/) ?? ["11/20"])[0]}から`;
+    badge.textContent = fromFlyer
+      ? EVENT_TYPE_CONFIG.find((e) => e.key === "limited")?.label ?? "期間限定"
+      : `${(String(set.period ?? "").match(/^\d{1,2}\/\d{1,2}/) ?? ["11/20"])[0]}から`;
     topRow.appendChild(badge);
     card.appendChild(topRow);
 
@@ -2154,27 +2159,29 @@ function appendPreviewSection(container) {
       was.className = "was-price";
       was.textContent = `通常 ${fmt.format(it.normal)}`;
       priceRow.appendChild(was);
-      // 通常価格より安いときだけ「○%OFF −¥○○○」を出す(同額・高いときは通常価格だけ)。
+      // 通常価格より安いときだけ「○%OFF」と「−¥○○○」を出す(同額・高いときは通常価格だけ)。
+      // ふだんのカードと同じ並び(%OFF、続けて金額)にそろえる。
       if (it.price < it.normal) {
         const off = document.createElement("span");
         off.className = "discount";
-        off.textContent = `${Math.round((1 - it.price / it.normal) * 100)}%OFF −${fmt.format(it.normal - it.price)}`;
+        off.textContent = `${Math.round((1 - it.price / it.normal) * 100)}%OFF`;
         priceRow.appendChild(off);
+        const amount = document.createElement("span");
+        amount.className = "delta down";
+        amount.textContent = `−${fmt.format(it.normal - it.price)}`;
+        priceRow.appendChild(amount);
       }
     }
     card.appendChild(priceRow);
 
     const facts = document.createElement("div");
     facts.className = "facts";
-    const fact = document.createElement("span");
-    fact.className = "fact";
-    fact.textContent = previewNamesOf(set).fact;
-    facts.appendChild(fact);
-    if (it.normalUnknown) {
-      const unknown = document.createElement("span");
-      unknown.className = "fact";
-      unknown.textContent = "通常価格 未確認(巡回データに無い)";
-      facts.appendChild(unknown);
+    // チラシ由来は、価格の種類の印も「通常価格 未確認」の印も付けない(通常価格が決まらない商品は、価格だけ出す)。
+    if (!fromFlyer) {
+      const fact = document.createElement("span");
+      fact.className = "fact";
+      fact.textContent = previewNamesOf(set).fact;
+      facts.appendChild(fact);
     }
     // 「一部の色・サイズのみ」「オンライン限定」など、対象に条件がある商品は、カードに目立つ印を付ける。
     for (const tag of Array.isArray(it.tags) ? it.tags : []) {
@@ -2183,14 +2190,25 @@ function appendPreviewSection(container) {
       t.textContent = tag;
       facts.appendChild(t);
     }
-    const genderLabel = it.genders ? (it.genders.size === 1 ? (it.genders.has("men") ? "メンズ" : "ウィメンズ") : "") : { men: "メンズ", women: "ウィメンズ" }[it.gender] ?? "";
+    const genderKey = it.genders ? (it.genders.size === 1 ? [...it.genders][0] : "") : it.gender ?? "";
+    const genderLabel = { men: "メンズ", women: "ウィメンズ" }[genderKey] ?? "";
     if (genderLabel) {
       const g = document.createElement("span");
-      g.className = "fact";
+      // ふだんのカードと同じ性別の印(先頭に置く)。
+      g.className = `fact gender-chip gender-${genderKey}`;
       g.textContent = genderLabel;
-      facts.appendChild(g);
+      facts.insertBefore(g, facts.firstChild);
     }
     card.appendChild(facts);
+
+    // ふだんの期間限定のカードと同じ「12月3日まで」の行(チラシ由来のとき)。
+    const endDateText = fromFlyer ? formatLimitedPriceEndDate(set.until) : null;
+    if (endDateText) {
+      const endDate = document.createElement("div");
+      endDate.className = "end-date";
+      endDate.textContent = endDateText;
+      card.appendChild(endDate);
+    }
 
     return card;
   };
