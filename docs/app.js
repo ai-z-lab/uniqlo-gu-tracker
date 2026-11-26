@@ -1959,7 +1959,9 @@ function overlayMuseInbox(data, inbox) {
   const keyOf = (it) => `${it.gender ?? ""}|${it.name}`;
   const incoming = new Map(inbox.items.filter((it) => it.name && Number.isFinite(it.price)).map((it) => [keyOf(it), it]));
   // inbox の期間が、いまのまとまりの期間と違うときは、古い期間の商品(先週の感謝祭の価格など)を引き継がない。
-  const sameWindow = !inbox.period || !set.period || inbox.period === set.period;
+  // extra の要素は period を持たず、最上位(data)の期間を引き継ぐので、実際に効く期間で比べる。
+  const currentPeriod = set.period ?? data.period;
+  const sameWindow = !inbox.period || !currentPeriod || inbox.period === currentPeriod;
   const kept = sameWindow ? set.items.filter((it) => !incoming.has(keyOf(it))) : [];
   set.items = [...kept, ...incoming.values()].map((it) => ({ ...it, url: it.url || `https://www.${inbox.brand === "gu" ? "gu-global" : "uniqlo"}.com/jp/ja/search?q=${encodeURIComponent(it.name)}` }));
   for (const k of ["title", "checked", "period", "until", "note"]) if (inbox[k]) set[k] = inbox[k];
