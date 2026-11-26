@@ -1986,14 +1986,15 @@ function previewSetFor(brand) {
   return set ? { ...previewData, ...set } : null;
 }
 
-// 先行公開のまとまりの呼び名。感謝祭の先行は GU の preview.json、UNIQLO のチラシ読み取り(muse-inbox)は説明文に「チラシ」が入る。
-// チラシの分を「感謝祭 先行公開」と出さないために、中身で呼び分ける(Museが title を置けばそれを優先)。
+// 先行公開のまとまりの呼び名。
+// - 公式が先に公開した感謝祭の価格(GU の preview.json)は「感謝祭 先行」。
+// - UNIQLO のチラシ読み取り(muse-inbox)は、公式サイトで公開されるまで未発表なので「先行」とは呼ばず、「期間限定予想」と呼ぶ(本人の決め、2026-11-26)。
+//   見出しは muse-inbox の title を優先し、無ければ「期間限定予想」。判定は説明文に「チラシ」が入っているかどうか。
 function previewNamesOf(set) {
   const fromFlyer = /チラシ/.test(set?.note ?? "");
-  return {
-    tab: fromFlyer ? "チラシ 先行" : "感謝祭 先行",
-    title: fromFlyer && (!set.title || set.title === previewData?.title) ? "チラシ掲載の値下げ(先行)" : set.title,
-  };
+  if (!fromFlyer) return { tab: "感謝祭 先行", title: set?.title };
+  const own = set?.title && set.title !== previewData?.title ? set.title : "";
+  return { tab: "期間限定予想", title: own || "期間限定予想" };
 }
 
 // 先行公開の商品のカテゴリ。巡回データの分類(scripts/scrape.mjs の CATEGORY_KEYWORDS)と同じ規則を、商品名から当てはめる。
