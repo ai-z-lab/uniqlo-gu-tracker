@@ -1,113 +1,293 @@
 {
   "brand": "uniqlo",
-  "source": "チラシ 26fw_flyer_1120_chirashi.pdf(Museが画像から読み取り)",
-  "checked": "2026-11-19",
-  "period": "11/20(金)〜11/26(木)",
-  "until": "2026-11-26",
-  "note": "ユニクロ公式の感謝祭ページと、11/19公開のチラシ(11/20〜)から読み取った感謝価格です。チラシ分は通常価格が載っていないため、価格のみ表示しています(性別の区別がない商品は男女どちらの表示にも出ます)。チラシは画像のため、読み取りの細かい誤差があり得ます。一部、期間限定価格の対象外の商品があります。",
+  "source": "チラシ 26fw_flyer_1127_chirashi.pdf(Museが画像から読み取り)",
+  "checked": "2026-11-26",
+  "period": "11/27(金)〜12/3(木)",
+  "until": "2026-12-03",
+  "note": "ユニクロ公式チラシ(11/27〜12/3、テーマ「防寒ウェアがお得！」)から読み取った価格です。チラシには通常価格が載っていないため、原則として価格のみ表示しています(ハイブリッドダウンパーカのみ「2,000円引き」の表記から通常価格を入れています)。チラシは画像のため、読み取りの細かい誤差があり得ます。性別の区別がない商品は男女どちらの表示にも出ます。KIDS・BABYは商品名にそのまま入っています。",
   "items": [
     {
-      "name": "ソフトニットフリースクルーネックT",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%BD%E3%83%95%E3%83%88%E3%83%8B%E3%83%83%E3%83%88%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9",
-      "price": 1290
+      "name": "超極暖ヒートテッククルーネックT",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E8%B6%85%E6%A5%B5%E6%9A%96%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF"
     },
     {
-      "name": "極暖カシミヤブレンドT (UNIQLO:C)",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E6%A5%B5%E6%9A%96%E3%82%AB%E3%82%B7%E3%83%9F%E3%83%A4%E3%83%96%E3%83%AC%E3%83%B3%E3%83%89",
-      "price": 1990
+      "name": "超極暖ヒートテックレギンス",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E8%B6%85%E6%A5%B5%E6%9A%96%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%20%E3%83%AC%E3%82%AE%E3%83%B3%E3%82%B9"
     },
     {
-      "name": "極暖カシミヤブレンドリブハイネックT (UNIQLO:C・11/20発売)",
+      "name": "超極暖ヒートテックタイツ",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E8%B6%85%E6%A5%B5%E6%9A%96%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%20%E3%82%BF%E3%82%A4%E3%83%84"
+    },
+    {
+      "name": "ヒートテックインナー",
+      "price": 1290,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%E3%82%A4%E3%83%B3%E3%83%8A%E3%83%BC"
+    },
+    {
+      "name": "極暖カシミヤブレンド",
+      "price": 2490,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E6%A5%B5%E6%9A%96%E3%82%AB%E3%82%B7%E3%83%9F%E3%83%A4%E3%83%96%E3%83%AC%E3%83%B3%E3%83%89"
+    },
+    {
+      "name": "極暖カシミヤブレンドリブハイネックT (UNIQLO and PRINCESSE tam-tam)",
+      "price": 2990,
       "url": "https://www.uniqlo.com/jp/ja/search?q=%E6%A5%B5%E6%9A%96%E3%82%AB%E3%82%B7%E3%83%9F%E3%83%A4%E3%83%96%E3%83%AC%E3%83%B3%E3%83%89%20%E3%83%AA%E3%83%96%E3%83%8F%E3%82%A4%E3%83%8D%E3%83%83%E3%82%AF",
-      "price": 2990
+      "gender": "women"
     },
     {
-      "name": "超極暖ヒートテック",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E8%B6%85%E6%A5%B5%E6%9A%96%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF",
-      "price": 2990
+      "name": "リバーシブルダウンショートジャケット",
+      "price": 10900,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%AA%E3%83%90%E3%83%BC%E3%82%B7%E3%83%96%E3%83%AB%E3%83%80%E3%82%A6%E3%83%B3%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88",
+      "gender": "women"
     },
     {
-      "name": "ヒートテックタイツ",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%E3%82%BF%E3%82%A4%E3%83%84",
-      "price": 1290
+      "name": "ノンキルトダウンジャケット",
+      "price": 12900,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%8E%E3%83%B3%E3%82%AD%E3%83%AB%E3%83%88%E3%83%80%E3%82%A6%E3%83%B3%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88",
+      "gender": "women"
     },
     {
-      "name": "ウルトラストレッチセット",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%83%AB%E3%83%88%E3%83%A9%E3%82%B9%E3%83%88%E3%83%AC%E3%83%83%E3%83%81",
-      "price": 2990
+      "name": "ライトダウンボリュームジャケット",
+      "price": 7990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%A9%E3%82%A4%E3%83%88%E3%83%80%E3%82%A6%E3%83%B3%E3%83%9C%E3%83%AA%E3%83%A5%E3%83%BC%E3%83%A0%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88",
+      "gender": "men"
     },
     {
-      "name": "ヒートテックソックス",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%E3%82%BD%E3%83%83%E3%82%AF%E3%82%B9",
-      "price": 390
-    },
-    {
-      "name": "ヒートテックロングルームソックス",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%20%E3%83%AB%E3%83%BC%E3%83%A0%E3%82%BD%E3%83%83%E3%82%AF%E3%82%B9",
-      "price": 790
+      "name": "ハイブリッドダウンパーカ",
+      "price": 12900,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%8F%E3%82%A4%E3%83%96%E3%83%AA%E3%83%83%E3%83%89%E3%83%80%E3%82%A6%E3%83%B3%E3%83%91%E3%83%BC%E3%82%AB",
+      "gender": "men",
+      "normal": 14900
     },
     {
       "name": "シームレスダウンパーカ",
+      "price": 14900,
       "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B7%E3%83%BC%E3%83%A0%E3%83%AC%E3%82%B9%E3%83%80%E3%82%A6%E3%83%B3",
-      "price": 12900
+      "gender": "women"
     },
     {
-      "name": "カシミヤセーター",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%AB%E3%82%B7%E3%83%9F%E3%83%A4%E3%82%BB%E3%83%BC%E3%82%BF%E3%83%BC",
-      "price": 9990
+      "name": "パフテックパーカ",
+      "price": 6990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%91%E3%83%95%E3%83%86%E3%83%83%E3%82%AF%E3%83%91%E3%83%BC%E3%82%AB"
     },
     {
-      "name": "スムースコットンクルーネックセーター (UNIQLO:C)",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B9%E3%83%A0%E3%83%BC%E3%82%B9%E3%82%B3%E3%83%83%E3%83%88%E3%83%B3%E3%82%AF%E3%83%AB%E3%83%BC%E3%83%8D%E3%83%83%E3%82%AF%E3%82%BB%E3%83%BC%E3%82%BF%E3%83%BC",
-      "price": 2990
+      "name": "ソフトブラッシュドボアハーフコート",
+      "price": 4990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%BD%E3%83%95%E3%83%88%E3%83%96%E3%83%A9%E3%83%83%E3%82%B7%E3%83%A5%E3%83%89%E3%83%9C%E3%82%A2%E3%83%8F%E3%83%BC%E3%83%95%E3%82%B3%E3%83%BC%E3%83%88"
+    },
+    {
+      "name": "ウールブレンドハリントンジャケット",
+      "price": 4990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%83%BC%E3%83%AB%E3%83%96%E3%83%AC%E3%83%B3%E3%83%89%E3%83%8F%E3%83%AA%E3%83%B3%E3%83%88%E3%83%B3%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88"
+    },
+    {
+      "name": "パデッドショートブルゾン",
+      "price": 5990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%91%E3%83%87%E3%83%83%E3%83%89%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%83%96%E3%83%AB%E3%82%BE%E3%83%B3"
+    },
+    {
+      "name": "ウォームイージーパンツ",
+      "price": 3990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%82%A9%E3%83%BC%E3%83%A0%E3%82%A4%E3%83%BC%E3%82%B8%E3%83%BC%E3%83%91%E3%83%B3%E3%83%84"
+    },
+    {
+      "name": "ウォームボアスウェットパンツ",
+      "price": 3990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%82%A9%E3%83%BC%E3%83%A0%E3%83%9C%E3%82%A2%E3%82%B9%E3%82%A6%E3%82%A7%E3%83%83%E3%83%88%E3%83%91%E3%83%B3%E3%83%84"
+    },
+    {
+      "name": "ウォームストレッチパンツ",
+      "price": 4990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%82%A9%E3%83%BC%E3%83%A0%E3%82%B9%E3%83%88%E3%83%AC%E3%83%83%E3%83%81%E3%83%91%E3%83%B3%E3%83%84"
+    },
+    {
+      "name": "ウォームスマートパンツ",
+      "price": 4990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%82%A9%E3%83%BC%E3%83%A0%E3%82%B9%E3%83%9E%E3%83%BC%E3%83%88%E3%83%91%E3%83%B3%E3%83%84"
+    },
+    {
+      "name": "フリースパンツ",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9%E3%83%91%E3%83%B3%E3%83%84"
+    },
+    {
+      "name": "メリノリブタートルネックセーター",
+      "price": 2990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%A1%E3%83%AA%E3%83%8E%E3%83%AA%E3%83%96%E3%82%BF%E3%83%BC%E3%83%88%E3%83%AB%E3%83%8D%E3%83%83%E3%82%AF%E3%82%BB%E3%83%BC%E3%82%BF%E3%83%BC",
+      "gender": "women"
+    },
+    {
+      "name": "メリノクルーネックセーター",
+      "price": 2990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%A1%E3%83%AA%E3%83%8E%E3%82%AF%E3%83%AB%E3%83%BC%E3%83%8D%E3%83%83%E3%82%AF%E3%82%BB%E3%83%BC%E3%82%BF%E3%83%BC",
+      "gender": "women"
+    },
+    {
+      "name": "メリノタートルネックセーター",
+      "price": 3990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%A1%E3%83%AA%E3%83%8E%E3%82%BF%E3%83%BC%E3%83%88%E3%83%AB%E3%83%8D%E3%83%83%E3%82%AF%E3%82%BB%E3%83%BC%E3%82%BF%E3%83%BC",
+      "gender": "men"
+    },
+    {
+      "name": "ラムウールクルーネックセーター",
+      "price": 2990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%A9%E3%83%A0%E3%82%A6%E3%83%BC%E3%83%AB%E3%82%AF%E3%83%AB%E3%83%BC%E3%83%8D%E3%83%83%E3%82%AF%E3%82%BB%E3%83%BC%E3%82%BF%E3%83%BC"
+    },
+    {
+      "name": "ラムウールVネックセーター (JW ANDERSON)",
+      "price": 2990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=JW%20ANDERSON%20%E3%83%A9%E3%83%A0%E3%82%A6%E3%83%BC%E3%83%ABV%E3%83%8D%E3%83%83%E3%82%AF%E3%82%BB%E3%83%BC%E3%82%BF%E3%83%BC"
+    },
+    {
+      "name": "カシミヤクルーネックセーター",
+      "price": 10900,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%AB%E3%82%B7%E3%83%9F%E3%83%A4%E3%82%BB%E3%83%BC%E3%82%BF%E3%83%BC"
+    },
+    {
+      "name": "ソフトニットハイネックT",
+      "price": 1290,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%BD%E3%83%95%E3%83%88%E3%83%8B%E3%83%83%E3%83%88%E3%83%8F%E3%82%A4%E3%83%8D%E3%83%83%E3%82%AFT"
+    },
+    {
+      "name": "ソフトニットモックネックT",
+      "price": 1290,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%BD%E3%83%95%E3%83%88%E3%83%8B%E3%83%83%E3%83%88%E3%83%A2%E3%83%83%E3%82%AF%E3%83%8D%E3%83%83%E3%82%AFT"
+    },
+    {
+      "name": "ソフトニットクルーネックT",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%BD%E3%83%95%E3%83%88%E3%83%8B%E3%83%83%E3%83%88%E3%82%AF%E3%83%AB%E3%83%BC%E3%83%8D%E3%83%83%E3%82%AFT"
+    },
+    {
+      "name": "リブニットVネックT",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%AA%E3%83%96%E3%83%8B%E3%83%83%E3%83%88V%E3%83%8D%E3%83%83%E3%82%AFT"
+    },
+    {
+      "name": "フリースジャケット",
+      "price": 2990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88"
+    },
+    {
+      "name": "ボアフリースコンビネーションジャケット",
+      "price": 2990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%9C%E3%82%A2%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9%E3%82%B3%E3%83%B3%E3%83%93%E3%83%8D%E3%83%BC%E3%82%B7%E3%83%A7%E3%83%B3%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88"
+    },
+    {
+      "name": "ファーリーフリースジャケット",
+      "price": 3990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%95%E3%82%A1%E3%83%BC%E3%83%AA%E3%83%BC%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88"
+    },
+    {
+      "name": "オーバーサイズスウェットシャツ (UNIQLO:C)",
+      "price": 2990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%AA%E3%83%BC%E3%83%90%E3%83%BC%E3%82%B5%E3%82%A4%E3%82%BA%E3%82%B9%E3%82%A6%E3%82%A7%E3%83%83%E3%83%88%E3%82%B7%E3%83%A3%E3%83%84"
+    },
+    {
+      "name": "ハーフジッププルオーバー (UNIQLO:C)",
+      "price": 3990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%8F%E3%83%BC%E3%83%95%E3%82%B8%E3%83%83%E3%83%97%E3%83%97%E3%83%AB%E3%82%AA%E3%83%BC%E3%83%90%E3%83%BC"
+    },
+    {
+      "name": "スウェットシャツ (UNIQLO:C)",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B9%E3%82%A6%E3%82%A7%E3%83%83%E3%83%88%E3%82%B7%E3%83%A3%E3%83%84"
+    },
+    {
+      "name": "スウェットパンツ (UNIQLO:C)",
+      "price": 3990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B9%E3%82%A6%E3%82%A7%E3%83%83%E3%83%88%E3%83%91%E3%83%B3%E3%83%84"
+    },
+    {
+      "name": "ウォームボアスウェットパーカ",
+      "price": 4990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%82%A9%E3%83%BC%E3%83%A0%E3%83%9C%E3%82%A2%E3%82%B9%E3%82%A6%E3%82%A7%E3%83%83%E3%83%88%E3%83%91%E3%83%BC%E3%82%AB",
+      "gender": "men"
+    },
+    {
+      "name": "KIDS ヒートテックインナー",
+      "price": 990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%E3%82%A4%E3%83%B3%E3%83%8A%E3%83%BC%20%E3%82%AD%E3%83%83%E3%82%BA"
+    },
+    {
+      "name": "KIDS 極暖ヒートテック",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E6%A5%B5%E6%9A%96%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%20%E3%82%AD%E3%83%83%E3%82%BA"
+    },
+    {
+      "name": "KIDS ウォームイージーパンツ",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A6%E3%82%A9%E3%83%BC%E3%83%A0%E3%82%A4%E3%83%BC%E3%82%B8%E3%83%BC%E3%83%91%E3%83%B3%E3%83%84%20%E3%82%AD%E3%83%83%E3%82%BA"
+    },
+    {
+      "name": "KIDS パフテックウォッシャブルパーカ",
+      "price": 3990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%91%E3%83%95%E3%83%86%E3%83%83%E3%82%AF%E3%82%A6%E3%82%A9%E3%83%83%E3%82%B7%E3%83%A3%E3%83%96%E3%83%AB%E3%83%91%E3%83%BC%E3%82%AB%20%E3%82%AD%E3%83%83%E3%82%BA"
+    },
+    {
+      "name": "BABY ファーリーフリースジャケット",
+      "price": 1290,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%95%E3%82%A1%E3%83%BC%E3%83%AA%E3%83%BC%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88%20%E3%83%99%E3%83%93%E3%83%BC"
+    },
+    {
+      "name": "ブラッシュドジャージーバレルレッグパンツ",
+      "price": 3990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%96%E3%83%A9%E3%83%83%E3%82%B7%E3%83%A5%E3%83%89%E3%82%B8%E3%83%A3%E3%83%BC%E3%82%B8%E3%83%BC%E3%83%90%E3%83%AC%E3%83%AB%E3%83%AC%E3%83%83%E3%82%B0%E3%83%91%E3%83%B3%E3%83%84"
+    },
+    {
+      "name": "ブラッシュドジャージーワイドパンツ",
+      "price": 4990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%96%E3%83%A9%E3%83%83%E3%82%B7%E3%83%A5%E3%83%89%E3%82%B8%E3%83%A3%E3%83%BC%E3%82%B8%E3%83%BC%E3%83%AF%E3%82%A4%E3%83%89%E3%83%91%E3%83%B3%E3%83%84"
+    },
+    {
+      "name": "スーパーノンアイロンシャツ",
+      "price": 2990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B9%E3%83%BC%E3%83%91%E3%83%BC%E3%83%8E%E3%83%B3%E3%82%A2%E3%82%A4%E3%83%AD%E3%83%B3%E3%82%B7%E3%83%A3%E3%83%84"
+    },
+    {
+      "name": "レーヨンブラウス",
+      "price": 2990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%AC%E3%83%BC%E3%83%A8%E3%83%B3%E3%83%96%E3%83%A9%E3%82%A6%E3%82%B9"
     },
     {
       "name": "フランネルシャツ",
       "price": 2990,
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%95%E3%83%A9%E3%83%B3%E3%83%8D%E3%83%AB%E3%82%B7%E3%83%A3%E3%83%84",
-      "gender": "men"
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%95%E3%83%A9%E3%83%B3%E3%83%8D%E3%83%AB%E3%82%B7%E3%83%A3%E3%83%84"
     },
     {
-      "name": "フランネルシャツ (JW ANDERSON)",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=JW%20ANDERSON%20%E3%83%95%E3%83%A9%E3%83%B3%E3%83%8D%E3%83%AB%E3%82%B7%E3%83%A3%E3%83%84",
-      "price": 2990,
-      "gender": "men"
+      "name": "ヒートテックマフラー",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%E3%83%9E%E3%83%95%E3%83%A9%E3%83%BC"
     },
     {
-      "name": "ストレートジーンズ (JW ANDERSON)",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=JW%20ANDERSON%20%E3%82%B9%E3%83%88%E3%83%AC%E3%83%BC%E3%83%88%E3%82%B8%E3%83%BC%E3%83%B3%E3%82%BA",
-      "price": 3990
+      "name": "ヒートテックビーニー",
+      "price": 1500,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%E3%83%93%E3%83%BC%E3%83%8B%E3%83%BC"
     },
     {
-      "name": "オーバーサイズプルパーカ (UNIQLO:C)",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%AA%E3%83%BC%E3%83%90%E3%83%BC%E3%82%B5%E3%82%A4%E3%82%BA%E3%83%97%E3%83%AB%E3%83%91%E3%83%BC%E3%82%AB",
-      "price": 2990
+      "name": "ヒートテックライニンググローブ",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%92%E3%83%BC%E3%83%88%E3%83%86%E3%83%83%E3%82%AF%E3%83%A9%E3%82%A4%E3%83%8B%E3%83%B3%E3%82%B0%E3%82%B0%E3%83%AD%E3%83%BC%E3%83%96"
     },
     {
-      "name": "スウェットシャツ",
-      "price": 2990,
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B9%E3%82%A6%E3%82%A7%E3%83%83%E3%83%88%E3%82%B7%E3%83%A3%E3%83%84",
-      "gender": "men"
+      "name": "ワイヤレスブラ",
+      "price": 1990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%AF%E3%82%A4%E3%83%A4%E3%83%AC%E3%82%B9%E3%83%96%E3%83%A9",
+      "gender": "women"
     },
     {
-      "name": "KAWS×UNIVERSE スウェットシャツ",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=KAWS%20UNIVERSE%20%E3%82%B9%E3%82%A6%E3%82%A7%E3%83%83%E3%83%88",
-      "price": 2990
+      "name": "シェイパーショーツ",
+      "price": 1290,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B7%E3%82%A7%E3%82%A4%E3%83%91%E3%83%BC%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%84",
+      "gender": "women"
     },
     {
-      "name": "スウェットパンツ (UNIQLO:C)",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%B9%E3%82%A6%E3%82%A7%E3%83%83%E3%83%88%E3%83%91%E3%83%B3%E3%83%84",
-      "price": 2990
-    },
-    {
-      "name": "EZYバレルジーンズ",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=EZY%E3%83%90%E3%83%AC%E3%83%AB%E3%82%B8%E3%83%BC%E3%83%B3%E3%82%BA",
-      "price": 2990
-    },
-    {
-      "name": "エアリズムマスク",
-      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%82%A8%E3%82%A2%E3%83%AA%E3%82%BA%E3%83%A0%E3%83%9E%E3%82%B9%E3%82%AF",
-      "price": 790
+      "name": "フリースセット",
+      "price": 3990,
+      "url": "https://www.uniqlo.com/jp/ja/search?q=%E3%83%95%E3%83%AA%E3%83%BC%E3%82%B9%E3%82%BB%E3%83%83%E3%83%88"
     }
   ]
 }
