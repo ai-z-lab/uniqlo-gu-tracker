@@ -1991,8 +1991,8 @@ function previewSetFor(brand) {
 function previewNamesOf(set) {
   const fromFlyer = /チラシ/.test(set?.note ?? "");
   return {
-    tab: fromFlyer ? "チラシ 先行" : "感謝祭 先行",
-    title: fromFlyer && (!set.title || set.title === previewData?.title) ? "チラシ掲載の値下げ(先行)" : set.title,
+    tab: fromFlyer ? "期間限定予想" : "感謝祭 先行",
+    title: fromFlyer && (!set.title || set.title === previewData?.title) ? "期間限定予想" : set.title,
   };
 }
 
