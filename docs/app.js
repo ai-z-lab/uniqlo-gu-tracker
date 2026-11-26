@@ -2043,6 +2043,8 @@ function previewAudienceOf(name) {
   return m ? m[1].toLowerCase() : "";
 }
 function buildTrackerNormalLookup(rows) {
+  const todayJst = jstDayOf(new Date());
+  const lastCrawlDay = lastCrawlDayOf(rows);
   const latestById = new Map();
   for (const row of rows) {
     const cur = latestById.get(row.product_id);
@@ -2056,7 +2058,9 @@ function buildTrackerNormalLookup(rows) {
     const original = originalPriceOf(latest);
     const key = `${latest.brand}|${previewNameKey(latest.product_name)}`;
     if (!map.has(key)) map.set(key, []);
-    map.get(key).push({ gender: latest.gender || "unknown", original, current: latest.price });
+    // 「いま」の価格は、最新の巡回で確認でき、期間限定が終わっていない行だけ使う(古い・終了した価格を出さない)。
+    const fresh = !isLimitedOfferOver(latest, todayJst) && (lastCrawlDay === null || jstDayOf(latest.scraped_at) >= lastCrawlDay);
+    map.get(key).push({ gender: latest.gender || "unknown", original, current: fresh ? latest.price : null });
   }
   return map;
 }
