@@ -2033,8 +2033,14 @@ function previewCategoryOf(brand, rawName) {
 // 商品名(表記ゆれを除いた一致)と性別が合う商品が巡回データにあり、通常価格が1つに決まるときだけ使う。
 // 決まらない・巡回データに無い商品は、価格のみで「通常価格 未確認」と出す。
 let trackerNormalByName = new Map();
+// 表記ゆれを除く: 「 - 色」「/タイプ」「(コラボ名)」の後ろと、KIDS/BABYの頭を落とす。
 function previewNameKey(name) {
-  return String(name ?? "").normalize("NFKC").split(/\s[–-]\s/)[0].replace(/\s+/g, "").toLowerCase();
+  return String(name ?? "").normalize("NFKC").split(/\s[–-]\s|\//)[0].replace(/\(.*?\)/g, "").replace(/^\s*(kids|baby)\s*/i, "").replace(/\s+/g, "").toLowerCase();
+}
+// チラシの商品名の頭の KIDS/BABY は、巡回データの kids/baby の商品だけに合わせる(大人向けの価格を当てない)。
+function previewAudienceOf(name) {
+  const m = String(name ?? "").normalize("NFKC").match(/^\s*(kids|baby)\b/i);
+  return m ? m[1].toLowerCase() : "";
 }
 function buildTrackerNormalLookup(rows) {
   const latestById = new Map();
@@ -2056,7 +2062,12 @@ function buildTrackerNormalLookup(rows) {
 }
 function trackerNormalFor(brand, it) {
   const found = (trackerNormalByName.get(`${brand}|${previewNameKey(it.name)}`) ?? []).filter(
-    (c) => !it.gender || c.gender === it.gender || c.gender === "unisex" || c.gender === "unknown",
+    (c) => {
+      const aud = previewAudienceOf(it.name);
+      if (aud) return c.gender === aud;
+      if (c.gender === "kids" || c.gender === "baby") return false;
+      return !it.gender || c.gender === it.gender || c.gender === "unisex" || c.gender === "unknown";
+    },
   );
   const originals = [...new Set(found.map((c) => c.original).filter((v) => v != null))];
   return originals.length === 1 ? originals[0] : null;
@@ -2154,7 +2165,8 @@ function appendPreviewSection(container) {
     price.className = "price";
     price.textContent = fmt.format(it.price);
     priceRow.appendChild(price);
-    if (it.normal) {
+    // 予想価格が通常価格と同額なら、値下げとは限らないので「通常」は出さない。
+    if (it.normal && it.normal !== it.price) {
       const was = document.createElement("span");
       was.className = "was-price";
       was.textContent = `通常 ${fmt.format(it.normal)}`;
