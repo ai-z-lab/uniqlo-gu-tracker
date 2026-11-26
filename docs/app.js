@@ -2033,9 +2033,9 @@ function previewCategoryOf(brand, rawName) {
 // 商品名(表記ゆれを除いた一致)と性別が合う商品が巡回データにあり、通常価格が1つに決まるときだけ使う。
 // 決まらない・巡回データに無い商品は、価格のみで「通常価格 未確認」と出す。
 let trackerNormalByName = new Map();
-// 表記ゆれを除く: 「 - 色」「/タイプ」「(コラボ名)」の後ろと、KIDS/BABYの頭を落とす。
+// 表記ゆれを除く: 「 - 色」「/タイプ」の後ろと、KIDS/BABYの頭を落とす。「(コラボ名)」は残す(コラボ品に、ふつうの品の通常価格を当てない)。
 function previewNameKey(name) {
-  return String(name ?? "").normalize("NFKC").split(/\s[–-]\s|\//)[0].replace(/\(.*?\)/g, "").replace(/^\s*(kids|baby)\s*/i, "").replace(/\s+/g, "").toLowerCase();
+  return String(name ?? "").normalize("NFKC").split(/\s[–-]\s|\//)[0].replace(/^\s*(kids|baby)\s*/i, "").replace(/\s+/g, "").toLowerCase();
 }
 // チラシの商品名の頭の KIDS/BABY は、巡回データの kids/baby の商品だけに合わせる(大人向けの価格を当てない)。
 function previewAudienceOf(name) {
@@ -2056,12 +2056,12 @@ function buildTrackerNormalLookup(rows) {
     const original = originalPriceOf(latest);
     const key = `${latest.brand}|${previewNameKey(latest.product_name)}`;
     if (!map.has(key)) map.set(key, []);
-    map.get(key).push({ gender: latest.gender || "unknown", original });
+    map.get(key).push({ gender: latest.gender || "unknown", original, current: latest.price });
   }
   return map;
 }
-function trackerNormalFor(brand, it) {
-  const found = (trackerNormalByName.get(`${brand}|${previewNameKey(it.name)}`) ?? []).filter(
+function trackerMatchesFor(brand, it) {
+  return (trackerNormalByName.get(`${brand}|${previewNameKey(it.name)}`) ?? []).filter(
     (c) => {
       const aud = previewAudienceOf(it.name);
       if (aud) return c.gender === aud;
@@ -2069,6 +2069,14 @@ function trackerNormalFor(brand, it) {
       return !it.gender || c.gender === it.gender || c.gender === "unisex" || c.gender === "unknown";
     },
   );
+}
+// 通常価格が分からない商品に、巡回データの「いまの価格」を1つに決まるときだけ添える。
+function trackerCurrentFor(brand, it) {
+  const cur = [...new Set(trackerMatchesFor(brand, it).map((c) => c.current).filter((v) => v != null))];
+  return cur.length === 1 ? cur[0] : null;
+}
+function trackerNormalFor(brand, it) {
+  const found = trackerMatchesFor(brand, it);
   const originals = [...new Set(found.map((c) => c.original).filter((v) => v != null))];
   return originals.length === 1 ? originals[0] : null;
 }
@@ -2082,7 +2090,9 @@ function previewItemsFor(brand, gender) {
     .map((it) => {
       if (it.normal != null) return it;
       const normal = trackerNormalFor(brand, it);
-      return normal != null ? { ...it, normal, normalFromTracker: true } : { ...it, normalUnknown: true };
+      if (normal != null) return { ...it, normal, normalFromTracker: true };
+      const nowPrice = trackerCurrentFor(brand, it);
+      return nowPrice != null ? { ...it, nowPrice, normalUnknown: true } : { ...it, normalUnknown: true };
     });
 }
 
@@ -2166,21 +2176,24 @@ function appendPreviewSection(container) {
     price.textContent = fmt.format(it.price);
     priceRow.appendChild(price);
     // 予想価格が通常価格と同額なら、値下げとは限らないので「通常」は出さない。
-    if (it.normal && it.normal !== it.price) {
+    // 通常価格が分からないときは、巡回データの「いまの価格」と比べる(同額なら「いま」だけ)。
+    const baseLabel = it.normal ? "通常" : it.nowPrice ? "いま" : "";
+    const base = it.normal || it.nowPrice || 0;
+    if (base && !(it.normal && it.normal === it.price)) {
       const was = document.createElement("span");
       was.className = "was-price";
-      was.textContent = `通常 ${fmt.format(it.normal)}`;
+      was.textContent = `${baseLabel} ${fmt.format(base)}`;
       priceRow.appendChild(was);
       // 通常価格より安いときだけ「○%OFF」と「−¥○○○」を出す(同額・高いときは通常価格だけ)。
       // ふだんのカードと同じ並び(%OFF、続けて金額)にそろえる。
-      if (it.price < it.normal) {
+      if (it.price < base) {
         const off = document.createElement("span");
         off.className = "discount";
-        off.textContent = `${Math.round((1 - it.price / it.normal) * 100)}%OFF`;
+        off.textContent = `${Math.round((1 - it.price / base) * 100)}%OFF`;
         priceRow.appendChild(off);
         const amount = document.createElement("span");
         amount.className = "delta down";
-        amount.textContent = `−${fmt.format(it.normal - it.price)}`;
+        amount.textContent = `−${fmt.format(base - it.price)}`;
         priceRow.appendChild(amount);
       }
     }
