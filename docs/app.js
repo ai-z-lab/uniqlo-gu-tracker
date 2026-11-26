@@ -1905,7 +1905,7 @@ function renderToolbar(rawBucket, bucket, crawl) {
 
   const previewCount = (state.gender === "all" ? new Set(previewItemsFor(state.brand, state.gender).map((it) => `${it.name}|${it.price}|${it.normal ?? ""}`)).size : previewItemsFor(state.brand, state.gender).length);
   const tabs = [
-    ...(previewCount > 0 ? [{ key: "preview", label: "感謝祭 先行", count: previewCount }] : []),
+    ...(previewCount > 0 ? [{ key: "preview", label: previewNamesOf(previewSetFor(state.brand)).tab, count: previewCount }] : []),
     { key: "today", label: "今日", count: crawl ? todayChangesOf(bucket, crawl.latestDay).filter((p) => !p.hidden).length : 0 },
     ...EVENT_TYPE_CONFIG.map((e) => ({ key: e.key, label: sectionLabelOf(e), count: countBuyable(bucket[e.key]) })),
     { key: "trend", label: "曜日の傾向", count: null },
@@ -1960,7 +1960,7 @@ function overlayMuseInbox(data, inbox) {
   const incoming = new Map(inbox.items.filter((it) => it.name && Number.isFinite(it.price)).map((it) => [keyOf(it), it]));
   const kept = set.items.filter((it) => !incoming.has(keyOf(it)));
   set.items = [...kept, ...incoming.values()].map((it) => ({ ...it, url: it.url || `https://www.${inbox.brand === "gu" ? "gu-global" : "uniqlo"}.com/jp/ja/search?q=${encodeURIComponent(it.name)}` }));
-  for (const k of ["checked", "period", "until", "note"]) if (inbox[k]) set[k] = inbox[k];
+  for (const k of ["title", "checked", "period", "until", "note"]) if (inbox[k]) set[k] = inbox[k];
 }
 
 async function fetchPreview() {
@@ -1984,6 +1984,16 @@ function previewSetFor(brand) {
   if (!previewData) return null;
   const set = [previewData, ...(previewData.extra ?? [])].find((s) => s.brand === brand);
   return set ? { ...previewData, ...set } : null;
+}
+
+// 先行公開のまとまりの呼び名。感謝祭の先行は GU の preview.json、UNIQLO のチラシ読み取り(muse-inbox)は説明文に「チラシ」が入る。
+// チラシの分を「感謝祭 先行公開」と出さないために、中身で呼び分ける(Museが title を置けばそれを優先)。
+function previewNamesOf(set) {
+  const fromFlyer = /チラシ/.test(set?.note ?? "");
+  return {
+    tab: fromFlyer ? "チラシ 先行" : "感謝祭 先行",
+    title: fromFlyer && (!set.title || set.title === previewData?.title) ? "チラシ掲載の値下げ(先行)" : set.title,
+  };
 }
 
 // 先行公開の商品のカテゴリ。巡回データの分類(scripts/scrape.mjs の CATEGORY_KEYWORDS)と同じ規則を、商品名から当てはめる。
@@ -2054,7 +2064,7 @@ function appendPreviewSection(container) {
   header.className = "section-header";
   const label = document.createElement("span");
   label.className = "label";
-  label.textContent = `${set.title}(${set.period})`;
+  label.textContent = `${previewNamesOf(set).title}(${set.period})`;
   const count = document.createElement("span");
   count.className = "count";
   count.textContent = `${items.length}件`;
