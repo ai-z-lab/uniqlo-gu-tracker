@@ -1958,7 +1958,11 @@ function overlayMuseInbox(data, inbox) {
   if (!set) return;
   const keyOf = (it) => `${it.gender ?? ""}|${it.name}`;
   const incoming = new Map(inbox.items.filter((it) => it.name && Number.isFinite(it.price)).map((it) => [keyOf(it), it]));
-  const kept = set.items.filter((it) => !incoming.has(keyOf(it)));
+  // inbox の期間が、いまのまとまりの期間と違うときは、古い期間の商品(先週の感謝祭の価格など)を引き継がない。
+  // extra の要素は period を持たず、最上位(data)の期間を引き継ぐので、実際に効く期間で比べる。
+  const currentPeriod = set.period ?? data.period;
+  const sameWindow = !inbox.period || !currentPeriod || inbox.period === currentPeriod;
+  const kept = sameWindow ? set.items.filter((it) => !incoming.has(keyOf(it))) : [];
   set.items = [...kept, ...incoming.values()].map((it) => ({ ...it, url: it.url || `https://www.${inbox.brand === "gu" ? "gu-global" : "uniqlo"}.com/jp/ja/search?q=${encodeURIComponent(it.name)}` }));
   for (const k of ["title", "checked", "period", "until", "note"]) if (inbox[k]) set[k] = inbox[k];
 }
@@ -1990,9 +1994,12 @@ function previewSetFor(brand) {
 // チラシの分を「感謝祭 先行公開」と出さないために、中身で呼び分ける(Museが title を置けばそれを優先)。
 function previewNamesOf(set) {
   const fromFlyer = /チラシ/.test(set?.note ?? "");
+  // fact(価格の種類の呼び名)は、チラシ由来では感謝祭の「感謝価格」を引き継いで出さない。
+  const ownFact = set?.fact && set.fact !== "感謝価格" ? set.fact : "";
   return {
     tab: fromFlyer ? "期間限定予想" : "感謝祭 先行",
     title: fromFlyer && (!set.title || set.title === previewData?.title) ? "期間限定予想" : set.title,
+    fact: fromFlyer ? ownFact || "チラシ掲載価格(予想)" : set?.fact ?? "アプリ会員 感謝価格",
   };
 }
 
@@ -2022,11 +2029,50 @@ function previewCategoryOf(brand, rawName) {
   return brand === "gu" ? "グッズ・その他" : "その他";
 }
 
+// 通常価格が書かれていない先行の商品(チラシ読み取りなど)に、巡回データの通常価格を突き合わせる。
+// 商品名(表記ゆれを除いた一致)と性別が合う商品が巡回データにあり、通常価格が1つに決まるときだけ使う。
+// 決まらない・巡回データに無い商品は、価格のみで「通常価格 未確認」と出す。
+let trackerNormalByName = new Map();
+function previewNameKey(name) {
+  return String(name ?? "").normalize("NFKC").split(/\s[–-]\s/)[0].replace(/\s+/g, "").toLowerCase();
+}
+function buildTrackerNormalLookup(rows) {
+  const latestById = new Map();
+  for (const row of rows) {
+    const cur = latestById.get(row.product_id);
+    if (!cur || new Date(row.scraped_at) > new Date(cur.scraped_at)) latestById.set(row.product_id, row);
+  }
+  const map = new Map();
+  for (const latest of latestById.values()) {
+    // 通常価格は、定価欄または事前に記録した通常価格(regular_prices)があるときだけ使う。
+    // 期間限定が終わっても、記録の価格は戻った価格に更新されない(通常価格に戻っただけの商品は記録しない)ので、
+    // 終了後のいまの価格を通常価格とはみなさない。
+    const original = originalPriceOf(latest);
+    const key = `${latest.brand}|${previewNameKey(latest.product_name)}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push({ gender: latest.gender || "unknown", original });
+  }
+  return map;
+}
+function trackerNormalFor(brand, it) {
+  const found = (trackerNormalByName.get(`${brand}|${previewNameKey(it.name)}`) ?? []).filter(
+    (c) => !it.gender || c.gender === it.gender || c.gender === "unisex" || c.gender === "unknown",
+  );
+  const originals = [...new Set(found.map((c) => c.original).filter((v) => v != null))];
+  return originals.length === 1 ? originals[0] : null;
+}
+
 function previewItemsFor(brand, gender) {
   const set = previewSetFor(brand);
   if (!set) return [];
   if (set.until && jstDayOf(new Date()) > set.until) return [];
-  return set.items.filter((it) => gender === "all" || !it.gender || it.gender === gender);
+  return set.items
+    .filter((it) => gender === "all" || !it.gender || it.gender === gender)
+    .map((it) => {
+      if (it.normal != null) return it;
+      const normal = trackerNormalFor(brand, it);
+      return normal != null ? { ...it, normal, normalFromTracker: true } : { ...it, normalUnknown: true };
+    });
 }
 
 function appendPreviewSection(container) {
@@ -2093,7 +2139,7 @@ function appendPreviewSection(container) {
     const badge = document.createElement("span");
     badge.className = "status-badge";
     badge.style.setProperty("--status-color", "var(--status-limited)");
-    badge.textContent = "11/20から";
+    badge.textContent = `${(String(set.period ?? "").match(/^\d{1,2}\/\d{1,2}/) ?? ["11/20"])[0]}から`;
     topRow.appendChild(badge);
     card.appendChild(topRow);
 
@@ -2108,10 +2154,13 @@ function appendPreviewSection(container) {
       was.className = "was-price";
       was.textContent = `通常 ${fmt.format(it.normal)}`;
       priceRow.appendChild(was);
-      const off = document.createElement("span");
-      off.className = "discount";
-      off.textContent = `${Math.round((1 - it.price / it.normal) * 100)}%OFF`;
-      priceRow.appendChild(off);
+      // 通常価格より安いときだけ「○%OFF −¥○○○」を出す(同額・高いときは通常価格だけ)。
+      if (it.price < it.normal) {
+        const off = document.createElement("span");
+        off.className = "discount";
+        off.textContent = `${Math.round((1 - it.price / it.normal) * 100)}%OFF −${fmt.format(it.normal - it.price)}`;
+        priceRow.appendChild(off);
+      }
     }
     card.appendChild(priceRow);
 
@@ -2119,8 +2168,14 @@ function appendPreviewSection(container) {
     facts.className = "facts";
     const fact = document.createElement("span");
     fact.className = "fact";
-    fact.textContent = set.fact ?? "アプリ会員 感謝価格";
+    fact.textContent = previewNamesOf(set).fact;
     facts.appendChild(fact);
+    if (it.normalUnknown) {
+      const unknown = document.createElement("span");
+      unknown.className = "fact";
+      unknown.textContent = "通常価格 未確認(巡回データに無い)";
+      facts.appendChild(unknown);
+    }
     // 「一部の色・サイズのみ」「オンライン限定」など、対象に条件がある商品は、カードに目立つ印を付ける。
     for (const tag of Array.isArray(it.tags) ? it.tags : []) {
       const t = document.createElement("span");
@@ -2729,6 +2784,7 @@ async function main() {
   statusEl.textContent = "";
   renderUpdated(data);
   index = buildIndex(data);
+  trackerNormalByName = buildTrackerNormalLookup(data);
   updateTabs();
   renderContent();
 }
