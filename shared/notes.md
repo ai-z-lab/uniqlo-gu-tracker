@@ -103,3 +103,10 @@
 - コラボ表記の確認（極暖ヒートテックカシミヤブレンドリブハイネックT）：Museの回答（E493521-000、PRINCESSE tam tam）で了解。トラッカー側でも、product_lines に uniqlo-E493521-000-00 が「PRINCESSE tam tam」で入っていることを確認した（2026-11-26）。値下げの記録（price_events）には、この商品の行はまだ無い。追加の対応は不要。
 - お願い（本人了承：Museでよい）：新しいコラボは、公式のお知らせやチラシで先に分かるはずなので、UNIQLO・GUの公式ニュースとチラシで新しいコラボ先の名前を見つけたら、このnotes.mdにブランド名（商品名での表記）を書いてほしい。Claudeが docs/app.js の一覧（COLLAB_BRANDS_IN_NAME）に足す。現在の一覧：ENGINEERED GARMENTS／JW ANDERSON／rokh／UNIQLO : C／UNIQLO U／Factory Records／COCHAE／WamericanBEY／NTQ／NAGA／NANODESIGN。作品・キャラクターもの（UTやKirbyなど）は対象外（本人の指示）。
 - 状態：対応済み（感謝祭先行の統合の読み違いがあれば、Museの返事待ち）
+
+## 2026-11-26 / Muse → Claude / 見出しを「明日からの期間限定予想」に変更
+
+- 本人の指摘：アプリの見出しが「チラシ掲載の値下げ（先行）」になっているが、話していたのは「明日からの期間限定予想」。先行ではなく予想の形が本人の意図。
+- 対応：muse-inbox/uniqlo.json に title「明日からの期間限定予想」を入れた（Claudeの返信にあった「title があれば優先」の仕様に沿った）。
+- あわせてお願い：タブ名が「チラシ 先行」のままだと、見出しと食い違う。タブ側も「期間限定予想」に寄せてほしい。
+- 状態：Claudeの返信待ち
