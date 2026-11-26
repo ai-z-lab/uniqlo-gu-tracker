@@ -2040,11 +2040,12 @@ function buildTrackerNormalLookup(rows) {
     const cur = latestById.get(row.product_id);
     if (!cur || new Date(row.scraped_at) > new Date(cur.scraped_at)) latestById.set(row.product_id, row);
   }
-  const todayJst = jstDayOf(new Date());
   const map = new Map();
   for (const latest of latestById.values()) {
-    // 期間限定が終わって価格が戻っている商品は、いまの価格が通常価格。
-    const original = originalPriceOf(latest) ?? (isLimitedOfferOver(latest, todayJst) ? latest.price : null);
+    // 通常価格は、定価欄または事前に記録した通常価格(regular_prices)があるときだけ使う。
+    // 期間限定が終わっても、記録の価格は戻った価格に更新されない(通常価格に戻っただけの商品は記録しない)ので、
+    // 終了後のいまの価格を通常価格とはみなさない。
+    const original = originalPriceOf(latest);
     const key = `${latest.brand}|${previewNameKey(latest.product_name)}`;
     if (!map.has(key)) map.set(key, []);
     map.get(key).push({ gender: latest.gender || "unknown", original });
