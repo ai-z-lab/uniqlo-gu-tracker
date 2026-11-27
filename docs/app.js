@@ -677,7 +677,7 @@ function buildIndex(rows) {
     const rawEventType = latest.event_type || "markdown";
     // 期間限定として記録されていても、価格の種類が会員価格なら別セクションへ。
     const eventType = LIMITED_EVENT_TYPES.has(rawEventType) && latest.price_type === "member" ? "member" : rawEventType;
-    const category = latest.category || (brand === "gu" ? "グッズ・その他" : "その他");
+    const category = categoryOverrideOf(brand, latest.product_name) || latest.category || (brand === "gu" ? "グッズ・その他" : "その他");
 
     idx[brand] ??= {};
     // 男女兼用はメンズにもレディースにも出す(どちらの一覧にも載っている商品)。
@@ -726,6 +726,13 @@ function buildIndex(rows) {
   return idx;
 }
 
+// 公式サイトの表示分類に合わせる商品(巡回データの分類と食い違うもの)。
+// パフテックパーカ(メンズE486172/ウィメンズE469871)は、巡回データではトップス、公式サイトではアウター。
+const CATEGORY_OVERRIDES = { uniqlo: { "パフテックパーカ": "アウター" } };
+function categoryOverrideOf(brand, name) {
+  const key = String(name ?? "").normalize("NFKC").split(/\s[–-]\s|\//)[0].replace(/\s+/g, "");
+  return CATEGORY_OVERRIDES[brand]?.[key] ?? "";
+}
 function categoryOrderFor(brand, categories) {
   const known = CATEGORY_ORDER[brand] || [];
   const ordered = known.filter((c) => categories.includes(c));
